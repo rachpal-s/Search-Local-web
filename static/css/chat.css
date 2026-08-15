@@ -1,0 +1,1167 @@
+/* ============================================================================
+   chat.css — three-pane agent console.
+
+   Palette continues the existing slate/blue system in style.css rather than
+   re-skinning: this is a shell replacement, not a rebrand, and a second visual
+   language would make the downloads sheet and the old form look like a
+   different product.
+
+   Layout: thread rail | conversation | trace panel. The trace panel is the one
+   thing that distinguishes this from a generic chat UI, so it is a peer pane
+   rather than a hidden drawer, and each assistant turn carries an inline
+   provenance strip naming the agents that produced it.
+   ========================================================================== */
+
+[hidden] {
+  display: none !important;
+}
+
+:root {
+  --bg: #f6f8fb;
+  --surface: #ffffff;
+  --surface-2: #f1f5f9;
+  --surface-3: #e8eef6;
+  --line: #e2e8f0;
+  --line-strong: #cbd5e1;
+  --ink: #0f172a;
+  --ink-2: #475569;
+  --ink-3: #7c8da5;
+  --accent: #2563eb;
+  --accent-ink: #1d4ed8;
+  --accent-wash: #eaf1ff;
+  --ok: #16a34a;
+  --warn: #d97706;
+  --bad: #dc2626;
+  --term-bg: #0d1526;
+  --term-ink: #7dd3fc;
+  --term-dim: #64748b;
+
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 14px;
+  --r-full: 999px;
+
+  --rail-w: 264px;
+  --trace-w: 348px;
+  --read-w: 46rem;
+
+  --sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  --shadow-1: 0 1px 2px rgba(15, 23, 42, 0.06);
+  --shadow-2: 0 8px 24px -8px rgba(15, 23, 42, 0.18);
+  --shadow-3: 0 24px 64px -16px rgba(15, 23, 42, 0.28);
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: var(--sans);
+  background: var(--bg);
+  color: var(--ink);
+  font-size: 15px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+svg {
+  width: 1em;
+  height: 1em;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--r-sm);
+}
+
+/* ── shell ────────────────────────────────────────────────────────────── */
+
+.shell {
+  display: grid;
+  grid-template-columns: var(--rail-w) minmax(0, 1fr) 0;
+  grid-template-rows: minmax(0, 1fr);
+  height: 100vh;
+  overflow: hidden;
+  transition: grid-template-columns 0.22s ease;
+}
+
+.shell[data-trace="open"] { grid-template-columns: var(--rail-w) minmax(0, 1fr) var(--trace-w); }
+.shell[data-rail="closed"] { grid-template-columns: 0 minmax(0, 1fr) 0; }
+.shell[data-rail="closed"][data-trace="open"] { grid-template-columns: 0 minmax(0, 1fr) var(--trace-w); }
+
+/* ── thread rail ──────────────────────────────────────────────────────── */
+
+.rail {
+  background: var(--surface);
+  border-right: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  grid-column: 1;
+}
+
+.rail-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 16px 12px 8px 16px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+
+/* Concentric mark: a supervisor ring around a worker core. Cheap to draw,
+   and it means something — it is the graph topology, not a sparkle. */
+.brand-mark {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid var(--accent);
+  position: relative;
+  flex: none;
+}
+.brand-mark::after {
+  content: "";
+  position: absolute;
+  inset: 3.5px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.brand-name {
+  font-weight: 650;
+  font-size: 0.9rem;
+  letter-spacing: -0.015em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  font-size: 16px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--ink-2);
+  cursor: pointer;
+  flex: none;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.icon-btn:hover { background: var(--surface-2); color: var(--ink); }
+.icon-btn.danger:hover { background: #fef2f2; color: var(--bad); }
+.icon-btn[aria-pressed="true"] { background: var(--accent-wash); color: var(--accent-ink); }
+
+.new-chat {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 12px 12px;
+  padding: 9px 12px;
+  font: inherit;
+  font-weight: 550;
+  font-size: 0.875rem;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.new-chat:hover { background: var(--surface-2); border-color: var(--ink-3); }
+.new-chat svg { font-size: 15px; }
+
+.rail-search {
+  position: relative;
+  margin: 0 12px 10px;
+}
+.rail-search .search-icon {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 14px;
+  color: var(--ink-3);
+  pointer-events: none;
+}
+.rail-search input {
+  width: 100%;
+  padding: 8px 10px 8px 31px;
+  font: inherit;
+  font-size: 0.85rem;
+  color: var(--ink);
+  background: var(--surface-2);
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+}
+.rail-search input:focus {
+  background: var(--surface);
+  border-color: var(--accent);
+  outline: none;
+}
+.rail-search input::-webkit-search-cancel-button { cursor: pointer; }
+
+.thread-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 8px 8px;
+  scrollbar-width: thin;
+}
+
+.thread-day {
+  padding: 12px 8px 4px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+.thread {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  margin-bottom: 1px;
+  font: inherit;
+  font-size: 0.875rem;
+  text-align: left;
+  color: var(--ink-2);
+  background: transparent;
+  border: 0;
+  border-radius: var(--r-md);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.thread:hover { background: var(--surface-2); color: var(--ink); }
+.thread[aria-current="true"] {
+  background: var(--accent-wash);
+  color: var(--accent-ink);
+  font-weight: 550;
+}
+
+.thread-name {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Paperclip count, not a generic dot: it says the thread has evidence in it. */
+.thread-clip {
+  flex: none;
+  font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-3);
+  font-family: var(--mono);
+}
+
+.rail-empty {
+  padding: 16px 10px;
+  margin: 0;
+  font-size: 0.825rem;
+  color: var(--ink-3);
+}
+
+.rail-foot {
+  border-top: 1px solid var(--line);
+  padding: 8px;
+}
+
+.rail-link {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 0.825rem;
+  color: var(--ink-2);
+  background: transparent;
+  border: 0;
+  border-radius: var(--r-md);
+  cursor: pointer;
+}
+.rail-link:hover { background: var(--surface-2); color: var(--ink); }
+
+/* ── conversation column ──────────────────────────────────────────────── */
+
+.convo {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg);
+  grid-column: 2;
+}
+
+.convo-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--bg) 82%, transparent);
+  backdrop-filter: blur(8px);
+  position: sticky;
+  top: 0;
+  z-index: 5;
+}
+
+.rail-open { display: none; }
+.shell[data-rail="closed"] .rail-open { display: inline-flex; }
+.shell[data-rail="closed"] .rail-collapse { display: none; }
+
+.convo-title {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 3px 6px;
+  border-radius: var(--r-sm);
+}
+.convo-title[contenteditable="true"] {
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--accent);
+  overflow: auto;
+  white-space: nowrap;
+}
+
+.convo-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.corpus-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-right: 6px;
+  padding: 3px 9px;
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  color: var(--ink-2);
+  background: var(--surface-3);
+  border-radius: var(--r-full);
+  white-space: nowrap;
+}
+
+/* ── transcript ───────────────────────────────────────────────────────── */
+
+.transcript {
+  flex: 1;
+  overflow-y: auto;
+  padding: 18px 20px 6px;
+  scroll-behavior: smooth;
+}
+
+.welcome {
+  max-width: var(--read-w);
+  margin: 4vh auto 0;
+  text-align: left;
+}
+.welcome h2 {
+  margin: 0 0 8px;
+  font-size: 1.65rem;
+  font-weight: 650;
+  letter-spacing: -0.028em;
+}
+.welcome p {
+  margin: 0 0 22px;
+  max-width: 34rem;
+  color: var(--ink-2);
+}
+
+.starters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 10px;
+}
+.starter {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 13px 14px;
+  font: inherit;
+  text-align: left;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+}
+.starter:hover {
+  border-color: var(--accent);
+  box-shadow: var(--shadow-1);
+  transform: translateY(-1px);
+}
+.starter strong { font-size: 0.875rem; font-weight: 600; }
+.starter span { font-size: 0.8rem; color: var(--ink-3); line-height: 1.4; }
+
+.turn {
+  max-width: var(--read-w);
+  margin: 0 auto 20px;
+}
+
+/* User turns are a contained bubble; assistant turns run full measure. The
+   asymmetry is the point — it mirrors who is asking and who is answering. */
+.turn.user {
+  display: flex;
+  justify-content: flex-end;
+}
+.turn.user .bubble {
+  max-width: 82%;
+  padding: 11px 15px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg) var(--r-lg) var(--r-sm) var(--r-lg);
+  box-shadow: var(--shadow-1);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.turn.assistant .bubble { padding: 0; }
+
+.turn-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+  justify-content: flex-end;
+}
+.turn-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  color: var(--ink-2);
+  background: var(--surface-3);
+  border-radius: var(--r-full);
+}
+
+/* Provenance strip — the signature element. Every assistant turn declares which
+   agents produced it and what evidence it leaned on, expandable in place. */
+.provenance {
+  margin-top: 12px;
+  border-top: 1px dashed var(--line-strong);
+  padding-top: 10px;
+}
+.provenance-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.prov-label {
+  font-family: var(--mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin-right: 2px;
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2.5px 9px;
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  color: var(--ink-2);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-full);
+}
+.chip.doc { background: var(--accent-wash); border-color: #c7dbff; color: var(--accent-ink); }
+.chip.score { color: var(--ink-3); }
+.chip button {
+  all: unset;
+  cursor: pointer;
+}
+.prov-more {
+  margin-left: auto;
+  padding: 2px 8px;
+  font: inherit;
+  font-size: 0.72rem;
+  color: var(--accent);
+  background: transparent;
+  border: 0;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+}
+.prov-more:hover { background: var(--accent-wash); }
+
+.prov-detail {
+  margin-top: 10px;
+  padding: 10px 12px;
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  line-height: 1.6;
+  color: var(--ink-2);
+  background: var(--surface-2);
+  border-radius: var(--r-md);
+  max-height: 260px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Thinking indicator while the graph runs */
+.thinking {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 0.875rem;
+  color: var(--ink-2);
+}
+.thinking .dots { display: inline-flex; gap: 3px; }
+.thinking .dots i {
+  width: 5px; height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: bounce 1.15s infinite ease-in-out;
+}
+.thinking .dots i:nth-child(2) { animation-delay: 0.15s; }
+.thinking .dots i:nth-child(3) { animation-delay: 0.3s; }
+@keyframes bounce {
+  0%, 80%, 100% { opacity: 0.25; transform: translateY(0); }
+  40% { opacity: 1; transform: translateY(-3px); }
+}
+.thinking-step {
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  color: var(--ink-3);
+}
+
+/* ── markdown ─────────────────────────────────────────────────────────── */
+
+.markdown { overflow-wrap: anywhere; }
+.markdown > :first-child { margin-top: 0; }
+.markdown > :last-child { margin-bottom: 0; }
+.markdown h1, .markdown h2, .markdown h3, .markdown h4 {
+  margin: 1.4em 0 0.5em;
+  font-weight: 650;
+  letter-spacing: -0.015em;
+  line-height: 1.3;
+}
+.markdown h1 { font-size: 1.4rem; }
+.markdown h2 { font-size: 1.18rem; }
+.markdown h3 { font-size: 1.02rem; }
+.markdown p, .markdown ul, .markdown ol { margin: 0 0 0.9em; }
+.markdown li { margin-bottom: 0.3em; }
+.markdown a { color: var(--accent-ink); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+.markdown code {
+  padding: 1.5px 5px;
+  font-family: var(--mono);
+  font-size: 0.86em;
+  background: var(--surface-3);
+  border-radius: 4px;
+}
+.markdown pre {
+  margin: 0 0 1em;
+  padding: 13px 15px;
+  overflow-x: auto;
+  background: var(--term-bg);
+  border-radius: var(--r-md);
+}
+.markdown pre code {
+  padding: 0;
+  color: #e2e8f0;
+  background: transparent;
+  font-size: 0.8rem;
+  line-height: 1.6;
+}
+.markdown blockquote {
+  margin: 0 0 1em;
+  padding: 2px 0 2px 14px;
+  border-left: 2.5px solid var(--line-strong);
+  color: var(--ink-2);
+}
+.markdown table {
+  width: 100%;
+  margin: 0 0 1em;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+  display: block;
+  overflow-x: auto;
+}
+.markdown th, .markdown td {
+  padding: 8px 11px;
+  border: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+.markdown th { background: var(--surface-2); font-weight: 600; }
+.markdown hr { border: 0; border-top: 1px solid var(--line); margin: 1.6em 0; }
+.markdown img { max-width: 100%; border-radius: var(--r-md); }
+
+/* ── composer ─────────────────────────────────────────────────────────── */
+
+.composer-wrap {
+  position: relative;
+  padding: 6px 20px 10px;
+  background: linear-gradient(to top, var(--bg) 55%, transparent);
+}
+
+.drop-hint {
+  position: absolute;
+  inset: 8px 20px 14px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.875rem;
+  font-weight: 550;
+  color: var(--accent-ink);
+  background: var(--accent-wash);
+  border: 1.5px dashed var(--accent);
+  border-radius: var(--r-lg);
+  z-index: 3;
+  pointer-events: none;
+}
+.composer-wrap[data-drag="true"] .drop-hint { display: flex; }
+
+.composer {
+  max-width: var(--read-w);
+  margin: 0 auto;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-2);
+  transition: border-color 0.15s ease;
+}
+.composer:focus-within { border-color: var(--accent); }
+
+.attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 10px 12px 0;
+}
+
+.att {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 260px;
+  padding: 5px 8px 5px 10px;
+  font-size: 0.775rem;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+}
+.att-name {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.att-state {
+  font-family: var(--mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.02em;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+.att[data-state="indexed"] { border-color: #bbf7d0; background: #f0fdf4; }
+.att[data-state="indexed"] .att-state { color: var(--ok); }
+.att[data-state="failed"], .att[data-state="quarantined"] {
+  border-color: #fecaca; background: #fef2f2;
+}
+.att[data-state="failed"] .att-state,
+.att[data-state="quarantined"] .att-state { color: var(--bad); }
+.att[data-state="degraded"] { border-color: #fde68a; background: #fffbeb; }
+.att[data-state="degraded"] .att-state { color: var(--warn); }
+
+.att-x {
+  all: unset;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px; height: 16px;
+  font-size: 12px;
+  color: var(--ink-3);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.att-x:hover { background: var(--line); color: var(--ink); }
+
+/* Indeterminate sweep — ingestion has no reliable percentage, and a fake
+   progress bar that stalls at 90% is worse than an honest sweep. */
+.att[data-busy="true"] {
+  background-image: linear-gradient(100deg, transparent 20%,
+    rgba(37, 99, 235, 0.12) 45%, transparent 70%);
+  background-size: 220% 100%;
+  animation: sweep 1.25s linear infinite;
+}
+@keyframes sweep {
+  from { background-position: 120% 0; }
+  to { background-position: -120% 0; }
+}
+
+.composer-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  padding: 8px 10px 9px;
+}
+
+.composer-row textarea {
+  flex: 1;
+  min-height: 26px;
+  max-height: 208px;
+  padding: 6px 4px;
+  font: inherit;
+  color: var(--ink);
+  background: transparent;
+  border: 0;
+  resize: none;
+  overflow-y: auto;
+}
+.composer-row textarea:focus { outline: none; }
+.composer-row textarea::placeholder { color: var(--ink-3); }
+
+.icon-btn.attach { color: var(--ink-3); }
+.icon-btn.attach:hover { color: var(--accent); background: var(--accent-wash); }
+
+.send {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px; height: 32px;
+  font-size: 17px;
+  color: #fff;
+  background: var(--accent);
+  border: 0;
+  border-radius: var(--r-md);
+  cursor: pointer;
+  flex: none;
+  transition: background 0.15s ease, opacity 0.15s ease;
+}
+.send:hover:not(:disabled) { background: var(--accent-ink); }
+.send:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.composer-foot {
+  max-width: var(--read-w);
+  margin: 8px auto 0;
+  font-size: 0.725rem;
+  color: var(--ink-3);
+  text-align: center;
+  max-height: 30px;
+  overflow: hidden;
+  transition: max-height 0.18s ease, margin 0.18s ease, opacity 0.18s ease;
+}
+
+/* Once the thread has real content, the reminder has done its job — an
+   empty new chat is the moment someone needs to be told agents can browse
+   live sources, not the fortieth message into a conversation with them. */
+.convo[data-has-messages="true"] .composer-foot {
+  max-height: 0;
+  margin-top: 0;
+  opacity: 0;
+}
+
+/* ── trace panel ──────────────────────────────────────────────────────── */
+
+.trace {
+  background: var(--surface);
+  border-left: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  grid-column: 3;
+}
+
+.trace-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 13px 12px 13px 16px;
+  border-bottom: 1px solid var(--line);
+}
+.trace-head h2 {
+  flex: 1;
+  margin: 0;
+  font-size: 0.775rem;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+}
+
+.pulse {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--line-strong);
+  flex: none;
+}
+.pulse[data-state="running"] {
+  background: var(--ok);
+  box-shadow: 0 0 0 0 rgba(22, 163, 74, 0.6);
+  animation: ping 1.5s infinite;
+}
+.pulse[data-state="error"] { background: var(--bad); }
+@keyframes ping {
+  70% { box-shadow: 0 0 0 7px rgba(22, 163, 74, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(22, 163, 74, 0); }
+}
+
+.trace-stream {
+  flex: 1;
+  min-height: 140px;
+  overflow-y: auto;
+  padding: 12px 14px;
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  line-height: 1.75;
+  color: var(--term-ink);
+  background: var(--term-bg);
+  overflow-wrap: anywhere;
+}
+.trace-stream::-webkit-scrollbar { width: 6px; }
+.trace-stream::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.18);
+  border-radius: 4px;
+}
+.trace-line { display: block; }
+.trace-line::before { content: "› "; color: var(--term-dim); }
+.trace-idle { margin: 0; color: var(--term-dim); }
+
+.trace-panel { border-top: 1px solid var(--line); }
+.trace-panel > summary {
+  padding: 11px 16px;
+  font-size: 0.8rem;
+  font-weight: 550;
+  color: var(--ink-2);
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.trace-panel > summary::-webkit-details-marker { display: none; }
+.trace-panel > summary::before {
+  content: "";
+  width: 5px; height: 5px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform 0.18s ease;
+  flex: none;
+}
+.trace-panel[open] > summary::before { transform: rotate(45deg); }
+.trace-panel > summary:hover { color: var(--ink); background: var(--surface-2); }
+
+.trace-panel-body {
+  padding: 0 16px 14px;
+  max-height: 300px;
+  overflow-y: auto;
+  font-size: 0.78rem;
+  color: var(--ink-2);
+}
+.trace-panel-body .muted { color: var(--ink-3); margin: 0; }
+
+.ctx-item {
+  margin-bottom: 8px;
+  padding: 9px 11px;
+  font-family: var(--mono);
+  font-size: 0.69rem;
+  line-height: 1.6;
+  background: var(--surface-2);
+  border-radius: var(--r-sm);
+  max-height: 150px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.doc-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.775rem;
+}
+.doc-row:last-child { border-bottom: 0; }
+.doc-name {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.doc-meta {
+  font-family: var(--mono);
+  font-size: 0.66rem;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+.tag {
+  padding: 1px 6px;
+  font-family: var(--mono);
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-radius: 3px;
+  background: var(--surface-3);
+  color: var(--ink-2);
+}
+.tag.confidential, .tag.restricted { background: #fef2f2; color: var(--bad); }
+.tag.public { background: #f0fdf4; color: var(--ok); }
+
+/* ── downloads sheet ──────────────────────────────────────────────────── */
+
+.scrim {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.32);
+  z-index: 40;
+  animation: fade 0.15s ease;
+}
+@keyframes fade { from { opacity: 0; } }
+
+.sheet {
+  position: fixed;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(520px, calc(100vw - 32px));
+  max-height: 74vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-3);
+  z-index: 41;
+  overflow: hidden;
+}
+.sheet-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 15px 12px 15px 18px;
+  border-bottom: 1px solid var(--line);
+}
+.sheet-head h2 { flex: 1; margin: 0; font-size: 0.95rem; font-weight: 600; }
+.sheet input[type="search"] {
+  margin: 12px 18px 4px;
+  padding: 8px 11px;
+  font: inherit;
+  font-size: 0.85rem;
+  background: var(--surface-2);
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+}
+.sheet input[type="search"]:focus {
+  background: var(--surface); border-color: var(--accent); outline: none;
+}
+.sheet-body { flex: 1; overflow-y: auto; padding: 8px 18px 18px; }
+
+.asset-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.85rem;
+}
+.asset-row:last-child { border-bottom: 0; }
+.asset-row a {
+  flex: 1;
+  min-width: 0;
+  color: var(--accent-ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── toast ────────────────────────────────────────────────────────────── */
+
+.toast {
+  position: fixed;
+  bottom: 22px; left: 50%;
+  transform: translateX(-50%);
+  padding: 10px 16px;
+  font-size: 0.85rem;
+  color: #fff;
+  background: var(--ink);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-2);
+  z-index: 60;
+  max-width: calc(100vw - 32px);
+}
+.toast[data-kind="error"] { background: var(--bad); }
+
+/* ── responsive ───────────────────────────────────────────────────────── */
+
+@media (max-width: 1180px) {
+  .shell[data-trace="open"] { grid-template-columns: var(--rail-w) minmax(0, 1fr) 0; }
+  .shell[data-trace="open"] .trace {
+    position: fixed;
+    top: 0; right: 0; bottom: 0;
+    width: min(var(--trace-w), 92vw);
+    box-shadow: var(--shadow-3);
+    z-index: 30;
+  }
+}
+
+@media (max-width: 860px) {
+  .shell,
+  .shell[data-trace="open"],
+  .shell[data-rail="closed"] { grid-template-columns: 0 1fr 0; }
+
+  .rail {
+    position: fixed;
+    top: 0; bottom: 0; left: 0;
+    width: min(var(--rail-w), 84vw);
+    transform: translateX(-102%);
+    transition: transform 0.22s ease;
+    box-shadow: var(--shadow-3);
+    z-index: 45;
+  }
+  .shell[data-rail="open"] .rail { transform: none; }
+  .rail-open { display: inline-flex; }
+
+  .convo {
+    width: 100%;
+    max-width: 100vw;
+    overflow-x: hidden;
+  }
+
+  .transcript { padding: 20px 14px 8px; }
+  .composer-wrap { padding: 6px 12px 10px; }
+  .turn.user .bubble { max-width: 90%; }
+  .welcome { margin-top: 3vh; }
+  .welcome h2 { font-size: 1.4rem; }
+  .starters { grid-template-columns: 1fr; }
+  .composer-foot { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ── live source cards (multi-scrape fanout) ─────────────────────────────
+   Transient "while researching" strip — see pendingTurn()/sourceCard() in
+   chat.js. Only ever appears above a pending turn; finishTurn() replaces the
+   whole node with assistantTurn(), which does NOT include this container,
+   so these cards are never part of the persisted transcript — the collapsed
+   "Evidence" provenance strip is the permanent record of the same sources.
+   ────────────────────────────────────────────────────────────────────── */
+.source-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.source-card {
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-1);
+  /* Each card animates in as its SSE event lands — a small cue that this
+     one just arrived, not a static list that was always there. */
+  animation: sourceCardIn 0.28s ease both;
+}
+.source-card--error { border-color: #f3c9c9; background: #fef8f8; }
+
+.source-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.source-card-title {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.source-card-tag {
+  flex-shrink: 0;
+  font-family: var(--mono);
+  font-size: 0.66rem;
+  color: var(--ink-3);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-full);
+  padding: 1.5px 8px;
+}
+.source-card-tag.warn { color: var(--warn); background: #fff7ed; border-color: #fde3c4; }
+.source-card-tag.bad { color: var(--bad); background: #fef2f2; border-color: #f3c9c9; }
+
+.source-card-snippet {
+  margin: 5px 0 0;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: var(--ink-2);
+}
+.source-card-domain {
+  display: block;
+  margin-top: 5px;
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  color: var(--ink-3);
+}
+
+@keyframes sourceCardIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Respect reduced-motion for the card entrance too, same as every other
+   animation in this file. */
+@media (prefers-reduced-motion: reduce) {
+  .source-card { animation: none; }
+}

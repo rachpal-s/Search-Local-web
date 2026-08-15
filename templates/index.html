@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dynamic Graphs & Agents</title>
+
+    <!-- Google Fonts & Marked.js -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+    <!-- External Stylesheet -->
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+
+<body>
+    <!-- Top Header Bar -->
+    <header class="app-header">
+        <div class="brand">
+            <span class="brand-icon">⚡</span>
+            <h1>Dynamic Graphs & Agents</h1>
+        </div>
+        <button id="files-btn" class="btn btn-secondary" onclick="toggleFilesModal()">📁 View Downloads</button>
+    </header>
+
+    <!-- Download Modal -->
+    <div id="files-modal" class="card modal-card">
+        <div class="modal-header">
+            <h4>Downloaded Assets</h4>
+            <button class="close-btn" onclick="toggleFilesModal()">✕</button>
+        </div>
+        <input type="text" id="file-search" class="input-field" placeholder="Search downloads..." onkeyup="filterFiles()">
+        <div class="table-container">
+            <table id="files-table">
+                <thead>
+                    <tr>
+                        <th>Filename</th>
+                        <th style="width: 60px; text-align: center;">Action</th>
+                    </tr>
+                </thead>
+                <tbody id="files-tbody">
+                    <!-- Populated dynamically via JS -->
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Main Dashboard Grid -->
+    <main class="dashboard-layout">
+
+        <!-- LEFT COLUMN: Primary Workspace -->
+        <section class="main-column">
+            
+            <!-- Query Input Card -->
+            <div class="card">
+                <form action="/chat" method="post" id="chat-form">
+                    <label for="prompt" class="form-label">Task Objective / Query</label>
+                    <textarea id="prompt" name="prompt" rows="3" class="input-field textarea-field" required>
+{% if prompt %}{{ prompt | trim }}{% else %}List trending news in india and the world refer site like: https://tribuneindia.com, https://thewire.in, https://news18.com, https://ndtv.com, https://cnn.com, https://rt.com{% endif %}</textarea>
+                    <div class="form-footer">
+                        <button type="submit" class="btn btn-primary">Execute Workflow 🚀</button>
+                    </div>
+                </form>
+            </div>
+
+            <!-- Main Response Area -->
+            <div id="response-card" class="card" style="display: {% if result %}block{% else %}none{% endif %};">
+                <h3 class="card-title">Response</h3>
+                <div id="raw-result" style="display: none;">{{ result }}</div>
+                <div id="rendered-result" class="markdown-body"></div>
+            </div>
+
+        </section>
+
+        <!-- RIGHT COLUMN: Telemetry & Inspection Sidebar -->
+        <aside class="sidebar-column" id="sidebar-container" style="display: {% if result %}flex{% else %}none{% endif %};">
+
+            <!-- 1. Live Streaming Terminal -->
+            <div class="card terminal-card">
+                <div class="terminal-header">
+                    <span class="status-indicator"></span>
+                    <h4>Live Execution Trace</h4>
+                </div>
+                <div id="live-logs" class="terminal-body">
+                    Waiting for input...
+                </div>
+            </div>
+
+            <!-- 2. Critic Evaluation Accordion -->
+            <div class="card accordion-card">
+                <details>
+                    <summary>
+                        <span>⚖️ Critic Evaluation</span>
+                    </summary>
+                    <div class="accordion-content">
+                        <div id="raw-feedback" style="display: none;">{{ feedback }}</div>
+                        <div id="rendered-feedback" class="markdown-body smaller-text"></div>
+                    </div>
+                </details>
+            </div>
+
+            <!-- 3. Terminal Execution Logs Accordion -->
+            <div class="card accordion-card">
+                <details>
+                    <summary>
+                        <span>🖥️ Terminal Logs</span>
+                    </summary>
+                    <div class="accordion-content">
+                        <div class="terminal-box smaller-text">
+                            <ul id="terminal-logs-list">
+                                {% if action_logs %}
+                                {% for log in action_logs %}
+                                <li>> {{ log }}</li>
+                                {% endfor %}
+                                {% else %}
+                                <li>> Awaiting execution completion...</li>
+                                {% endif %}
+                            </ul>
+                        </div>
+                    </div>
+                </details>
+            </div>
+
+            <!-- 4. System Context History Accordion -->
+            <div class="card accordion-card">
+                <details>
+                    <summary>
+                        <span>📦 System Context (Payloads)</span>
+                    </summary>
+                    <div class="accordion-content">
+                        <ul id="system-context-list" class="context-list smaller-text">
+                            {% if context %}
+                            {% for item in context %}
+                            <li>{{ item }}</li>
+                            {% endfor %}
+                            {% else %}
+                            <li>Awaiting execution completion...</li>
+                            {% endif %}
+                        </ul>
+                    </div>
+                </details>
+            </div>
+
+        </aside>
+
+    </main>
+
+    <script src="/static/js/script.js" defer></script>
+</body>
+
+</html>

@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ingestion jobs</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+    rel="stylesheet">
+
+  <link rel="stylesheet" href="/static/css/chat.css">
+  <link rel="stylesheet" href="/static/css/jobs.css">
+</head>
+
+<body class="jobs-body">
+
+  <header class="jobs-header">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span class="brand-name">Ingestion jobs</span>
+    </div>
+    <nav class="jobs-nav" aria-label="Primary">
+      <a href="/" class="nav-link">Chat</a>
+      <a href="/jobs" class="nav-link is-current" aria-current="page">Jobs</a>
+    </nav>
+    <button class="btn primary" id="new-job-btn">New job</button>
+  </header>
+
+  <main class="jobs-main">
+
+    <div class="worker-banner" id="worker-banner" hidden>
+      <span class="worker-dot"></span>
+      <span id="worker-banner-text"></span>
+    </div>
+
+    <section class="stat-strip" aria-label="Summary">
+      <div class="stat">
+        <span class="stat-value" id="stat-running">0</span>
+        <span class="stat-label">Running</span>
+      </div>
+      <div class="stat">
+        <span class="stat-value" id="stat-queued">0</span>
+        <span class="stat-label">Queued</span>
+      </div>
+      <div class="stat">
+        <span class="stat-value" id="stat-collections">0</span>
+        <span class="stat-label">Collections</span>
+      </div>
+      <div class="stat">
+        <span class="stat-value" id="stat-docs">0</span>
+        <span class="stat-label">Documents</span>
+      </div>
+      <div class="stat">
+        <span class="stat-value" id="stat-chunks">0</span>
+        <span class="stat-label">Chunks</span>
+      </div>
+      <div class="stat">
+        <span class="stat-value" id="stat-failed">0</span>
+        <span class="stat-label">Failed</span>
+      </div>
+    </section>
+
+    <div class="jobs-grid">
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2 class="panel-title">History</h2>
+          <div class="panel-actions">
+            <label class="sr-only" for="status-filter">Filter by status</label>
+            <select id="status-filter" class="field small">
+              <option value="">All statuses</option>
+              <option value="running">Running</option>
+              <option value="queued">Queued</option>
+              <option value="succeeded">Succeeded</option>
+              <option value="failed">Failed</option>
+              <option value="cancelled">Cancelled</option>
+            </select>
+            <button class="btn small" id="refresh-btn" title="Refresh">↻</button>
+          </div>
+        </div>
+
+        <div id="jobs-list" class="jobs-list" aria-live="polite">
+          <p class="muted">Loading…</p>
+        </div>
+
+        <div class="pager">
+          <button class="btn small" id="prev-page" disabled>Previous</button>
+          <span id="page-info" class="muted"></span>
+          <button class="btn small" id="next-page" disabled>Next</button>
+        </div>
+      </section>
+
+      <aside class="panel detail" id="detail" hidden>
+        <div class="panel-head">
+          <h2 class="panel-title" id="detail-title">Job</h2>
+          <button class="icon-btn" id="detail-close" aria-label="Close">✕</button>
+        </div>
+
+        <dl class="detail-meta" id="detail-meta"></dl>
+
+        <h3 class="label">Source folders</h3>
+        <ul class="folder-list" id="detail-folders"></ul>
+
+        <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100"
+             id="bar-track">
+          <div class="bar-fill" id="bar-fill"></div>
+        </div>
+        <p class="bar-caption" id="bar-caption">—</p>
+
+        <h3 class="label">Phases</h3>
+        <ol class="phase-rail" id="phase-rail"></ol>
+
+        <div class="label-row" style="margin-top:16px">
+          <h3 class="label" style="margin:0">Documents from this job</h3>
+          <button class="btn small" id="toggle-docs">Show</button>
+        </div>
+        <div class="doc-list" id="doc-list" hidden></div>
+
+        <h3 class="label">Activity</h3>
+        <div class="log" id="log" aria-live="polite"></div>
+
+        <div class="detail-actions">
+          <button class="btn small" id="rerun-btn">Re-run</button>
+          <button class="btn small" id="rerun-force-btn">Rebuild from scratch</button>
+          <button class="btn small danger" id="cancel-btn">Cancel</button>
+        </div>
+      </aside>
+    </div>
+  </main>
+
+  <div class="scrim" id="scrim" hidden></div>
+
+  <section class="sheet wide" id="new-job" hidden role="dialog" aria-modal="true"
+           aria-labelledby="new-job-title">
+    <div class="sheet-head">
+      <h2 id="new-job-title">New ingestion job</h2>
+      <button class="icon-btn" id="new-job-close" aria-label="Close">✕</button>
+    </div>
+
+    <div class="sheet-body">
+      <label class="label" for="job-name">Job name</label>
+      <input type="text" id="job-name" class="field" placeholder="Q3 policy documents">
+
+      <label class="label" for="collection">Target collection</label>
+      <select id="collection" class="field">
+        <option value="">Create a new collection</option>
+        {% for c in collections %}
+        <option value="{{ c.id }}">{{ c.name }} — {{ '{:,}'.format(c.documents) }} docs</option>
+        {% endfor %}
+      </select>
+      <input type="text" id="collection-name" class="field" placeholder="New collection name">
+      <p class="hint">A collection is a corpus chats can attach and search. Running
+        the same job again adds to it rather than replacing it.</p>
+
+      <label class="label" for="folder-set">Saved folder set</label>
+      <select id="folder-set" class="field">
+        <option value="">None — define folders below</option>
+        {% for fs in folder_sets %}
+        <option value="{{ fs.set_id }}">{{ fs.name }} ({{ fs.folders|length }})</option>
+        {% endfor %}
+      </select>
+
+      <div class="label-row">
+        <span class="label">Source folders</span>
+        <button class="btn small" id="add-folder">Add folder</button>
+      </div>
+      <p class="hint">Subfolders are always included. Permitted roots:
+        <code>{{ allowed_roots|join(', ') }}</code></p>
+      <div id="folders"></div>
+
+      <details class="block">
+        <summary>Options</summary>
+        <div class="opt-grid">
+          <div>
+            <label class="label" for="workers">Worker processes</label>
+            <input type="number" id="workers" class="field" min="0" max="128" value="0">
+            <p class="hint">0 uses all cores minus 25% headroom.</p>
+          </div>
+          <div>
+            <label class="label" for="embed-conc">Embedding concurrency</label>
+            <input type="number" id="embed-conc" class="field" min="1" max="32" value="4">
+            <p class="hint">Network-bound, so this is separate from cores.</p>
+          </div>
+          <div>
+            <label class="label" for="enrich">Enrichment</label>
+            <select id="enrich" class="field">
+              <option value="auto">Auto — spaCy if available</option>
+              <option value="spacy">spaCy</option>
+              <option value="none">Skip</option>
+            </select>
+          </div>
+          <div>
+            <label class="label" for="max-files">File cap</label>
+            <input type="number" id="max-files" class="field" min="0" value="0">
+            <p class="hint">0 = no cap. Useful for a first trial run.</p>
+          </div>
+        </div>
+        <label class="check"><input type="checkbox" id="opt-force">
+          Reprocess everything, ignoring what is already indexed</label>
+        <label class="check"><input type="checkbox" id="opt-skip-images">
+          Skip image files — they need a vision call each and dominate wall-clock</label>
+      </details>
+    </div>
+
+    <div class="sheet-foot">
+      <p class="form-error" id="new-job-error" hidden></p>
+      <button class="btn" id="save-set">Save folder set</button>
+      <button class="btn primary" id="start-job">Start job</button>
+    </div>
+  </section>
+
+  <div id="toast" class="toast" role="status" hidden></div>
+
+  <script>window.FILETYPES = {{ filetypes|tojson }};</script>
+  <script src="/static/js/jobs.js" defer></script>
+</body>
+
+</html>

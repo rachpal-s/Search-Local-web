@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ app_title|default("Agent Console") }}</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+    rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+  <link rel="stylesheet" href="/static/css/chat.css">
+  <link rel="stylesheet" href="/static/css/collections.css">
+</head>
+
+<body>
+  <div class="shell" id="shell">
+
+    <!-- ───────────────────────── THREAD RAIL ───────────────────────── -->
+    <aside class="rail" id="rail" aria-label="Conversations">
+      <div class="rail-top">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <span class="brand-name">{{ app_title|default("Agent Console") }}</span>
+        </div>
+        <button class="icon-btn rail-collapse" id="rail-close" aria-label="Hide conversations">
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M10 3.5 5.5 8l4.5 4.5" />
+          </svg>
+        </button>
+      </div>
+
+      <button class="new-chat" id="new-chat">
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M8 3.5v9M3.5 8h9" />
+        </svg>
+        New chat
+      </button>
+
+      <div class="rail-search">
+        <svg viewBox="0 0 16 16" aria-hidden="true" class="search-icon">
+          <circle cx="7" cy="7" r="4.25" />
+          <path d="m10.5 10.5 3 3" />
+        </svg>
+        <input type="search" id="thread-search" placeholder="Search chats" autocomplete="off"
+          aria-label="Search conversations">
+      </div>
+
+      <nav class="thread-list" id="thread-list" aria-label="Chat history">
+        <p class="rail-empty">Loading chats…</p>
+      </nav>
+
+      <div class="rail-foot">
+        <button class="rail-link" id="collections-btn">
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M2.5 4.5h11v8h-11zM2.5 4.5 4 2.5h8l1.5 2M6 8h4" />
+          </svg>
+          Knowledge collections
+          <span class="rail-count" id="collections-count" hidden></span>
+        </button>
+        <a class="rail-link" href="/jobs">
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M8 2v3M8 11v3M2 8h3M11 8h3M4 4l2 2M10 10l2 2M12 4l-2 2M6 10l-2 2" />
+          </svg>
+          Ingestion jobs
+        </a>
+        <button class="rail-link" id="downloads-btn">
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M8 3v7m0 0 3-3m-3 3L5 7M3.5 12.5h9" />
+          </svg>
+          Downloaded assets
+        </button>
+      </div>
+    </aside>
+
+    <!-- ───────────────────────── CONVERSATION ───────────────────────── -->
+    <main class="convo" id="convo">
+      <header class="convo-head">
+        <button class="icon-btn rail-open" id="rail-open" aria-label="Show conversations">
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11" />
+          </svg>
+        </button>
+
+        <h1 class="convo-title" id="convo-title" contenteditable="false" spellcheck="false">New chat</h1>
+
+        <div class="convo-actions">
+          <span class="corpus-badge" id="corpus-badge" hidden></span>
+          <button class="icon-btn" id="new-chat-btn" aria-label="New chat" title="New Chat">
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M8 2v12M2 8h12" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+            </svg>
+          </button>
+          <button class="icon-btn" id="rename-btn" aria-label="Rename this chat" title="Rename">
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M11 3.5 12.5 5 6 11.5H4.5V10z" />
+            </svg>
+          </button>
+          <button class="icon-btn danger" id="delete-btn" aria-label="Delete this chat" title="Delete">
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M3.5 5.5h9M6 5.5V4h4v1.5M5 5.5l.5 8h5l.5-8" />
+            </svg>
+          </button>
+          <button class="icon-btn" id="trace-toggle" aria-label="Toggle execution trace" title="Execution trace"
+            aria-pressed="false">
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M2.5 12.5h3v-5h-3zM6.5 12.5h3v-9h-3zM10.5 12.5h3v-7h-3z" />
+            </svg>
+          </button>
+        </div>
+      </header>
+
+      <div class="transcript" id="transcript">
+        <!-- Empty state -->
+        <section class="welcome" id="welcome">
+          <h2>What are we researching?</h2>
+          <p>Ask a question and the supervisor will decide which agents to run —
+            search, scraping, extraction, diagrams. Attach documents and they
+            become part of the evidence for this thread.</p>
+          <div class="starters" id="starters">
+            <button class="starter"
+              data-prompt="Summarise the attached documents and list the decisions they commit us to.">
+              <strong>Summarise attachments</strong>
+              <span>Pull the commitments out of what I've uploaded</span>
+            </button>
+            <button class="starter"
+              data-prompt="List trending news in India and the world, referring to https://tribuneindia.com, https://thewire.in, https://ndtv.com and https://cnn.com">
+              <strong>Trending news sweep</strong>
+              <span>Scrape several outlets and reconcile them</span>
+            </button>
+            <button class="starter"
+              data-prompt="Draw a Mermaid architecture diagram of an event-driven order pipeline with a supervisor agent, worker agents and a critic loop.">
+              <strong>Architecture diagram</strong>
+              <span>Generate Mermaid from a described system</span>
+            </button>
+            <button class="starter"
+              data-prompt="Download your favourite video from youtube">
+              <strong>YouTube Video</strong>
+              <span>Download from YouTube</span>
+            </button>
+            <button class="starter"
+              data-prompt="Create your own word cloud from the response received">
+              <strong>Word Cloud</strong>
+              <span>Create Word Cloud</span>
+            </button>
+          </div>
+        </section>
+      </div>
+
+      <!-- ───────────────────────── COMPOSER ───────────────────────── -->
+      <div class="scope-banner" id="scope-banner" hidden>
+        <span id="scope-banner-text"></span>
+        <button class="scope-banner-btn" id="scope-banner-btn" type="button">Search &amp; attach</button>
+        <button class="scope-banner-close" id="scope-banner-close" type="button" aria-label="Dismiss">✕</button>
+      </div>
+
+      <div class="composer-wrap">
+        <div class="drop-hint" id="drop-hint">Drop files to attach them to this chat</div>
+
+        <form class="composer" id="composer" autocomplete="off">
+          <div class="attachments" id="attachments" hidden></div>
+
+          <div class="composer-row">
+            <button type="button" class="icon-btn attach" id="attach-btn" aria-label="Attach files"
+              title="Attach files">
+              <svg viewBox="0 0 16 16" aria-hidden="true">
+                <path
+                  d="M9.5 4.5 5.75 8.25a1.75 1.75 0 1 0 2.5 2.5L12 7a3.25 3.25 0 0 0-4.6-4.6L3.6 6.2a4.75 4.75 0 0 0 6.7 6.7l2.2-2.2" />
+              </svg>
+            </button>
+            <button type="button" class="icon-btn paste" id="paste-btn" aria-label="Paste from clipboard"
+              title="Paste from clipboard" hidden>
+              <svg viewBox="0 0 16 16" aria-hidden="true">
+                <path d="M5.5 3.5v-1a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1v1m-6 0h8v10h-8v-10z" fill="none"
+                  stroke="currentColor" stroke-width="1.2" />
+              </svg>
+            </button>
+
+            <label class="sr-only" for="prompt">Your question</label>
+            <textarea id="prompt" name="prompt" rows="1" placeholder="Ask anything, or attach a document or paste an image ..."
+              required></textarea>
+
+            <button type="submit" class="send" id="send-btn" aria-label="Send message">
+              <svg viewBox="0 0 16 16" aria-hidden="true">
+                <path d="M8 13V3.5m0 0L4.5 7M8 3.5 11.5 7" />
+              </svg>
+            </button>
+          </div>
+
+          <input type="file" id="file-input" multiple hidden
+            accept=".pdf,.docx,.txt,.md,.markdown,.html,.htm,.png,.jpg,.jpeg,.webp,.tif,.tiff,.bmp,.csv,.tsv,.xlsx">
+        </form>
+
+        <p class="composer-foot">
+          Agents can browse and scrape live sources. Verify anything load-bearing.
+        </p>
+      </div>
+    </main>
+
+    <!-- ───────────────────────── TRACE PANEL ───────────────────────── -->
+    <aside class="trace" id="trace" aria-label="Execution trace" hidden>
+      <div class="trace-head">
+        <span class="pulse" id="trace-pulse" data-state="idle"></span>
+        <h2>Execution trace</h2>
+        <button class="icon-btn" id="trace-close" aria-label="Hide execution trace">
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M4.5 4.5l7 7m0-7-7 7" />
+          </svg>
+        </button>
+      </div>
+
+      <div class="trace-stream" id="trace-stream">
+        <p class="trace-idle">Idle. Send a message to watch the graph run.</p>
+      </div>
+
+      <details class="trace-panel">
+        <summary>Critic evaluation</summary>
+        <div class="trace-panel-body markdown" id="trace-feedback">
+          <p class="muted">No evaluation yet.</p>
+        </div>
+      </details>
+
+      <details class="trace-panel">
+        <summary>Retrieved evidence &amp; payloads</summary>
+        <div class="trace-panel-body" id="trace-context">
+          <p class="muted">No worker payloads captured.</p>
+        </div>
+      </details>
+
+      <details class="trace-panel">
+        <summary>Attached documents</summary>
+        <div class="trace-panel-body" id="trace-docs">
+          <p class="muted">Nothing attached to this chat.</p>
+        </div>
+      </details>
+    </aside>
+  </div>
+
+  <!-- Downloaded assets dialog -->
+  <div class="scrim" id="scrim" hidden></div>
+  <div class="sheet" id="downloads-sheet" role="dialog" aria-modal="true" aria-labelledby="downloads-title" hidden>
+    <div class="sheet-head">
+      <h2 id="downloads-title">Downloaded assets</h2>
+      <button class="icon-btn" id="downloads-close" aria-label="Close">
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M4.5 4.5l7 7m0-7-7 7" />
+        </svg>
+      </button>
+    </div>
+    <input type="search" id="asset-search" placeholder="Filter assets" aria-label="Filter assets">
+    <div class="sheet-body" id="downloads-body"></div>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+  <script src="/static/js/chat.js" defer></script>
+  <!-- ─────────────────── KNOWLEDGE COLLECTIONS SHEET ─────────────────── -->
+  <section class="sheet" id="collections-sheet" hidden role="dialog" aria-modal="true"
+           aria-labelledby="collections-title">
+    <div class="sheet-head">
+      <h2 id="collections-title">Knowledge collections</h2>
+      <button class="icon-btn" id="collections-close" aria-label="Close">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" /></svg>
+      </button>
+    </div>
+    <p class="sheet-hint">
+      Collections are corpora built by <a href="/jobs">ingestion jobs</a>. Attach one
+      and this chat can search it alongside its own attachments. Nothing is attached
+      automatically.
+    </p>
+
+    <div class="coll-search-row">
+      <input type="text" id="coll-search-input" class="coll-search-input"
+             placeholder="Not sure which collection has it? Search a name or term…">
+      <button class="coll-search-btn" id="coll-search-btn" type="button">Search</button>
+    </div>
+    <div id="coll-search-results"></div>
+
+    <div class="sheet-body" id="collections-body">
+      <p class="muted">Loading…</p>
+    </div>
+  </section>
+
+</body>
+
+</html>
