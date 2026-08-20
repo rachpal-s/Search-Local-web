@@ -5,6 +5,8 @@ earlier APPROVED/feedback-text based router paired with
 `critic_node_OLDDD`. Neither was wired into the compiled graph, so it
 was dropped here as dead code (see agents/critic.py).
 """
+import json
+
 from langgraph.graph import END
 from langgraph.types import Send
 
@@ -41,6 +43,15 @@ def route_from_supervisor(state: AgentState):
     # supervisor decision asking for the same agent five times is capped
     # just as a five-loop repeat would be.
     dispatched_now: dict[str, int] = {}
+    # Agents whose output is a pure function of their payload. Several of
+    # these in one decision is fan-out across different targets, not the
+    # same work repeated, so they are budgeted on width instead.
+    fanout_agents = {a.strip() for a in
+                     (settings.parallel_fanout_agents or "").split(",") if a.strip()}
+    # Exact-duplicate payloads within ONE decision are repetition whatever
+    # the agent — this is the check the count-based cap was really reaching
+    # for, and it costs nothing to make it precise.
+    seen_payloads: set[str] = set()
 
     for task in tasks:
         agent_name = task.get("agent")
@@ -58,14 +69,29 @@ def route_from_supervisor(state: AgentState):
                   f"{retrieval_attempts} attempt(s), cap is {max_retrieval_attempts}.")
             continue
 
+        fingerprint = f"{agent_name}::{json.dumps(payload, sort_keys=True, default=str)}"
+        if fingerprint in seen_payloads:
+            print(f"[ROUTER] 🛑 Skipping duplicate '{agent_name}' payload: {payload}")
+            continue
+        seen_payloads.add(fingerprint)
+
+        # General per-agent ceiling. Observed failure this prevents: the
+        # supervisor re-dispatching mermaid_generator on four consecutive
+        # loops, producing four diagrams from one request and presenting all
+        # of them as the answer, when the first had already succeeded.
+        #
+        # Fan-out agents get a wider budget instead. With a single shared cap
+        # of 2, a four-URL query had two of its scraper tasks silently dropped
+        # on the first loop, the re-request on the next loop dropped entirely
+        # (count already at the cap), and the run fell through to the critic
+        # with final_response still None — scoring 0 on an answer that was
+        # never written.
+        cap = (settings.max_fanout_per_agent if agent_name in fanout_agents
+               else max_per_agent)
         already = dispatch_counts.get(agent_name, 0) + dispatched_now.get(agent_name, 0)
-        if already >= max_per_agent:
-            # General per-agent ceiling. Observed failure this prevents: the
-            # supervisor re-dispatching mermaid_generator on four consecutive
-            # loops, producing four diagrams from one request and presenting
-            # all of them as the answer, when the first had already succeeded.
+        if already >= cap:
             print(f"[ROUTER] 🛑 Skipping '{agent_name}' dispatch — already "
-                  f"dispatched {already}x this turn, cap is {max_per_agent}.")
+                  f"dispatched {already}x this turn, cap is {cap}.")
             continue
 
         print(f"[ROUTER] 🔀 Dispatching task to specialist: '{agent_name}' with payload: {payload}")

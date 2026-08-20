@@ -72,6 +72,41 @@ def critic_node(state: AgentState) -> Dict[str, Any]:
     """Score the proposed final response from 0-100 and provide feedback."""
     print(f"\n[CRITIC] ⚖️ ENTERING CRITIC EVALUATION")
     current_critic_loop = state.get("critic_loop_count", 0) + 1
+
+    # ------------------------------------------------------------------
+    # EMPTY-ANSWER GUARD.
+    #
+    # The supervisor leaves final_response as null whenever it routes to
+    # "agents" — that is correct and expected. But the router can filter
+    # EVERY dispatched task (capped agents, unknown agents, duplicate
+    # payloads) and then fall through to "critic" anyway, because an empty
+    # Send list is not a valid transition. The critic then evaluates the
+    # literal string "None", scores it 0, and reports "the response contains
+    # no content" — a real but entirely uninformative verdict that costs a
+    # full LLM call and reads to the operator like a model failure rather
+    # than a routing one.
+    #
+    # Score 0 is still returned, so route_from_critic sends this back to the
+    # supervisor to synthesize. score_history is deliberately NOT written:
+    # nothing was scored, and letting a phantom 0 in would break the
+    # critic_min_improvement plateau check on the following pass — the next
+    # real score would be measured as an improvement over a non-attempt, or
+    # a second phantom would look like a plateau and terminate the run.
+    # ------------------------------------------------------------------
+    if not (state.get("final_response") or "").strip():
+        msg = ("No response was synthesized — every dispatched task was filtered "
+               "out before it ran. Synthesize an answer from the existing context "
+               "now; do not dispatch further tasks.")
+        print(f"[CRITIC] ⚠️ Empty final_response — skipping evaluation. {msg}")
+        return {
+            "eval_score": 0,
+            "feedback": msg,
+            "critic_loop_count": current_critic_loop,
+            "action_logs": [
+                "⚠️ No answer to evaluate — returning to the Supervisor to synthesize."
+            ],
+        }
+
     llm = ChatOllama(
         base_url=get_settings().ollama_inference_url,
         model=CRITIC_MODEL, 
