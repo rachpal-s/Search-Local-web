@@ -151,7 +151,8 @@ def _merge_shard_results(shard_results: list[list[dict]],
     because this compares resolved entities (few), not raw mentions (many).
     """
     synthetic: list[Mention] = []
-    entity_by_synthetic_id: dict[int, dict] = {}
+    # entity_by_synthetic_id: dict[int, dict] = {}
+    entity_by_mention_id: dict[int, dict] = {}
     for entities in shard_results:
         for e in entities:
             idx = len(synthetic)
@@ -165,7 +166,7 @@ def _merge_shard_results(shard_results: list[list[dict]],
                 source_uri="",   # cross-shard: folder signal already spent locally
                 cooccurring_entities=frozenset(all_cooccur),
             ))
-            entity_by_synthetic_id[idx] = e
+            entity_by_mention_id[id(synthetic[-1])] = e
 
     if not synthetic:
         return []
@@ -174,8 +175,7 @@ def _merge_shard_results(shard_results: list[list[dict]],
 
     out: list[dict] = []
     for cluster in merged_clusters:
-        member_indices = [synthetic.index(m) for m in cluster.mentions]
-        originals = [entity_by_synthetic_id[i] for i in member_indices]
+        originals = [entity_by_mention_id[id(m)] for m in cluster.mentions]
         all_aliases = sorted({originals[0]["canonical_name"]}
                              | {a for o in originals for a in o["aliases"]}
                              | {o["canonical_name"] for o in originals[1:]})
@@ -264,9 +264,11 @@ def build_graph(collection_id: str, threshold: float,
                 [{"mentions": [vars(m) for m in shard], "threshold": threshold}
                  for shard in shards],
             ))
-
+    t_merge = time.perf_counter()
     entities = _merge_shard_results(shard_results, threshold) if len(shards) > 1 \
         else shard_results[0]
+    print(f"[graph] merge: {len(entities):,} entities in "
+          f"{int((time.perf_counter() - t_merge) * 1000):,}ms")
     edges = _build_cooccurrence_edges(entities)
 
     return GraphBuildResult(

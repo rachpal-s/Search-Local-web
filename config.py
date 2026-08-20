@@ -311,7 +311,7 @@ class Settings(BaseSettings):
     # Folders outside these roots are refused by the jobs API. Without the
     # confinement the folder textbox on the job form is an arbitrary-file-read
     # endpoint. os.pathsep separated (":" on Linux, ";" on Windows).
-    ingest_allowed_roots: str = "data/incoming"
+    ingest_allowed_roots: str = "C:\\RS\\Personal (Desktop)"
     job_staging_dir: str = "data/staging"
     job_default_workers: int = 0          # 0 = cores minus 25% headroom
     job_embed_concurrency: int = 4        # network-bound; independent of cores
