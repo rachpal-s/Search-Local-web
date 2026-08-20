@@ -43,14 +43,9 @@ def route_from_supervisor(state: AgentState):
     # supervisor decision asking for the same agent five times is capped
     # just as a five-loop repeat would be.
     dispatched_now: dict[str, int] = {}
-    # Agents whose output is a pure function of their payload. Several of
-    # these in one decision is fan-out across different targets, not the
-    # same work repeated, so they are budgeted on width instead.
-    fanout_agents = {a.strip() for a in
-                     (settings.parallel_fanout_agents or "").split(",") if a.strip()}
-    # Exact-duplicate payloads within ONE decision are repetition whatever
-    # the agent — this is the check the count-based cap was really reaching
-    # for, and it costs nothing to make it precise.
+    # Fan-out vs. repetition is now a property the agent DECLARES at
+    # registration (workflow/registry.py, "fanout": True/False) rather than
+    # a name kept in sync in a second file — see that module's docstring.
     seen_payloads: set[str] = set()
 
     for task in tasks:
@@ -86,8 +81,8 @@ def route_from_supervisor(state: AgentState):
         # (count already at the cap), and the run fell through to the critic
         # with final_response still None — scoring 0 on an answer that was
         # never written.
-        cap = (settings.max_fanout_per_agent if agent_name in fanout_agents
-               else max_per_agent)
+        is_fanout = AGENT_REGISTRY[agent_name].get("fanout", False)
+        cap = settings.max_fanout_per_agent if is_fanout else max_per_agent
         already = dispatch_counts.get(agent_name, 0) + dispatched_now.get(agent_name, 0)
         if already >= cap:
             print(f"[ROUTER] 🛑 Skipping '{agent_name}' dispatch — already "

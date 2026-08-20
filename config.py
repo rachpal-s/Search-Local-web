@@ -306,15 +306,11 @@ class Settings(BaseSettings):
     # generated across four loops, all four presented as the answer, when
     # the first had already succeeded.
     max_dispatches_per_agent: int = 2
-    # The cap above is keyed on agent NAME only, which cannot distinguish
-    # repetition (same agent, same effective payload, four loops — the
-    # mermaid_generator case it was written for) from fan-out (one agent
-    # type across four DIFFERENT URLs — "summarise these four news sites").
-    # Agents listed here are payload-determined: their output is a pure
-    # function of the URL / query / lookup they were handed, so dispatching
-    # them N times in a turn is breadth, not runaway looping. They get a
-    # width budget instead of the artifact-agent cap. Comma-separated.
-    parallel_fanout_agents: str = "scraper,search,doc_retriever"
+    # Width budget for agents declared "fanout": True in AGENT_REGISTRY
+    # (workflow/registry.py) — payload-determined agents like scraper/search/
+    # doc_retriever, where dispatching N times in a turn means N different
+    # targets, not the same work repeated. See registry.py's docstring for
+    # how a new agent opts into this instead of the tighter cap above.
     max_fanout_per_agent: int = 8
 
     # ---------------- batch ingestion jobs ----------------

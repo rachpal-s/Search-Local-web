@@ -4,6 +4,18 @@ Adding a new worker to the graph only requires: (1) an agent module
 under agents/ exposing a `<name>_node` function, (2) a matching
 TypedDict payload in workflow/state.py, and (3) an entry here. The
 graph builder and supervisor prompt both consume this registry.
+
+Each entry also declares "fanout" (default False if omitted):
+- fanout=True  — the agent's output is a pure function of its payload
+  (a URL, a search query, a doc-retrieval query). Dispatching it several
+  times in one turn with DIFFERENT payloads is fan-out across targets,
+  not repetition, so router.py budgets these on `max_fanout_per_agent`
+  instead of the tighter `max_dispatches_per_agent`.
+- fanout=False (or omitted) — the agent produces an artifact (a diagram,
+  a word cloud, a download). Re-dispatching it several times in one turn
+  usually means the supervisor is repeating itself, so it stays capped
+  at `max_dispatches_per_agent`. This is the safer default — leave it
+  unset unless the agent is genuinely payload-determined.
 """
 from agents.doc_retriever import doc_retriever_node
 from agents.extractor import extractor_node
@@ -28,6 +40,7 @@ AGENT_REGISTRY = {
             "Requires payload format: {'query': '<what to look up>'}"
         ),
         "func": doc_retriever_node,
+        "fanout": True,
     },
     "extractor": {
         "description": "Extracts source URLs embedded directly in the text. Requires payload format: {'text': '<text>'}",
@@ -36,10 +49,12 @@ AGENT_REGISTRY = {
     "search": {
         "description": "Searches the web for top search results using SearXNG. Requires payload format: {'query': '<search term>'}",
         "func": search_node,
+        "fanout": True,
     },
     "scraper": {
         "description": "Scrapes content from a specific web URL. Requires payload format: {'url': '<url>'}",
         "func": scraper_node,
+        "fanout": True,
     },
     "youtube_downloader": {
         "description": "Searches for a music or video query on YouTube and downloads it locally to the server. Requires payload format: {'query': '<song or video description>'}",
