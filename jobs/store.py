@@ -22,11 +22,13 @@ from typing import Any
 
 from docstore.store import _now, conn, new_id
 from jobs.models import (
+    GRAPH_PHASES,
     PHASES,
     FolderSet,
     FolderSpec,
     Job,
     JobEvent,
+    JobKind,
     JobOptions,
     JobStatus,
     Phase,
@@ -48,6 +50,7 @@ CREATE TABLE IF NOT EXISTS job_folder_sets (
 CREATE TABLE IF NOT EXISTS jobs (
     job_id           TEXT PRIMARY KEY,
     name             TEXT NOT NULL,
+    kind             TEXT NOT NULL DEFAULT 'ingest',
     status           TEXT NOT NULL DEFAULT 'queued',
     collection_id    TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
     set_id           TEXT,
@@ -112,9 +115,22 @@ CREATE TABLE IF NOT EXISTS workers (
 
 
 def init_db() -> None:
-    """Create the job tables. Idempotent; called from the app startup hook."""
+    """Create the job tables. Idempotent; called from the app startup hook.
+
+    `kind` is an additive column — a database that already has real job rows
+    (as this deployment does) needs it ALTERed in, not just declared in
+    CREATE TABLE IF NOT EXISTS, which is a no-op on an existing table. Same
+    class of bug as the ix_conv_kind ordering issue in docstore/store.py:
+    the fix there was "migrate before anything depends on the new column,"
+    and it applies here too.
+    """
     with conn() as c:
         c.executescript(_SCHEMA)
+        try:
+            c.execute("ALTER TABLE jobs ADD COLUMN kind TEXT NOT NULL DEFAULT 'ingest'")
+            print("[jobs.store] migrated: jobs.kind added")
+        except Exception:  # noqa: BLE001 — sqlite3.OperationalError: already present
+            pass
 
 
 # ------------------------------------------------------------------ folder sets
@@ -165,28 +181,53 @@ def _row_to_set(row) -> FolderSet:
 def create_job(name: str, collection_id: str, folders: list[FolderSpec],
                options: JobOptions | None = None, set_id: str | None = None,
                created_by: str = "ui") -> Job:
+    """Create an INGEST job — walks folders, extracts, chunks, embeds."""
     if not folders:
         raise ValueError("A job needs at least one folder.")
     job = Job(
-        job_id=f"job_{uuid.uuid4().hex[:12]}", name=name,
+        job_id=f"job_{uuid.uuid4().hex[:12]}", name=name, kind=JobKind.ingest,
         collection_id=collection_id, set_id=set_id,
         folders=folders, options=options or JobOptions(), created_by=created_by,
     )
     job.phases = [PhaseRun(phase=p, seq=i) for i, p in enumerate(PHASES)]
+    _insert_job(job)
+    add_event(job.job_id, f"Queued with {len(folders)} folder(s).")
+    return job
 
+
+def create_graph_job(name: str, collection_id: str,
+                     created_by: str = "ui") -> Job:
+    """Create a GRAPH_BUILD job — no folders; reads an existing collection's
+    already-enriched chunks and builds/rebuilds its knowledge graph.
+
+    Deliberately a separate job kind rather than a flag on an ingest job:
+    graph construction is something an operator chooses to run on a
+    collection that already exists, at a time of their choosing, never a
+    side effect of a folder-ingestion run that would make it silently slower.
+    """
+    job = Job(
+        job_id=f"job_{uuid.uuid4().hex[:12]}", name=name, kind=JobKind.graph_build,
+        collection_id=collection_id, folders=[], options=JobOptions(),
+        created_by=created_by,
+    )
+    job.phases = [PhaseRun(phase=p, seq=i) for i, p in enumerate(GRAPH_PHASES)]
+    _insert_job(job)
+    add_event(job.job_id, "Graph build queued.")
+    return job
+
+
+def _insert_job(job: Job) -> None:
     with conn() as c:
         c.execute(
-            "INSERT INTO jobs (job_id,name,status,collection_id,set_id,folders_json,"
-            "options_json,created_by,created_at) VALUES (?,?,?,?,?,?,?,?,?)",
-            (job.job_id, job.name, job.status.value, job.collection_id, job.set_id,
+            "INSERT INTO jobs (job_id,name,kind,status,collection_id,set_id,"
+            "folders_json,options_json,created_by,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (job.job_id, job.name, job.kind.value, job.status.value,
+             job.collection_id, job.set_id,
              json.dumps([f.to_dict() for f in job.folders]),
              json.dumps(job.options.to_dict()), job.created_by, job.created_at))
         c.executemany(
             "INSERT INTO job_phases (job_id,phase,seq,status) VALUES (?,?,?,?)",
             [(job.job_id, p.phase.value, p.seq, p.status) for p in job.phases])
-
-    add_event(job.job_id, f"Queued with {len(folders)} folder(s).")
-    return job
 
 
 def get_job(job_id: str) -> Job | None:
@@ -419,7 +460,9 @@ def active_workers(stale_after: int = WORKER_STALE_SECONDS) -> list[dict]:
 
 def _row_to_job(row, phase_rows) -> Job:
     return Job(
-        job_id=row["job_id"], name=row["name"], status=JobStatus(row["status"]),
+        job_id=row["job_id"], name=row["name"],
+        kind=JobKind(row["kind"]) if "kind" in row.keys() and row["kind"] else JobKind.ingest,
+        status=JobStatus(row["status"]),
         collection_id=row["collection_id"],
         collection_name=(row["collection_name"] if "collection_name" in row.keys()
                          else "") or "",

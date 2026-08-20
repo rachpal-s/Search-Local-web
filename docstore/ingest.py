@@ -37,6 +37,7 @@ import asyncio
 import json
 import re
 import unicodedata
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -389,6 +390,36 @@ async def ingest_document(conversation_id: str, doc_id: str) -> dict:
     if doc["status"] == "indexed":
         return {"doc_id": doc_id, "status": "indexed", "chunk_count": doc["chunk_count"]}
 
+    if doc["status"] == "degraded":
+        # Extraction, chunking, and classification already succeeded — only
+        # embedding failed last time, almost always something transient (an
+        # Ollama timeout under load). Retry just that, using the same
+        # chunks_missing_vectors() lookup the full pipeline uses below.
+        # Redoing extract/chunk/enrich here would be pure waste: identical
+        # input, identical output, paid for a second time.
+        pending = store.chunks_missing_vectors(doc_id)
+        if not pending:
+            # Nothing actually missing — a status/vector mismatch from a
+            # previous partial write. Indexed is the honest label for that.
+            store.set_document_status(doc_id, "indexed", chunk_count=doc["chunk_count"])
+            return {"doc_id": doc_id, "status": "indexed", "chunk_count": doc["chunk_count"]}
+        try:
+            batch = int(getattr(cfg, "embed_batch_size", 16))
+            model = embed_model_name()
+            for i in range(0, len(pending), batch):
+                window = pending[i:i + batch]
+                vecs = await embed_texts([t for _, t in window])
+                store.save_vectors(conversation_id, model,
+                                   list(zip([c for c, _ in window], vecs)))
+        except Exception as e:  # noqa: BLE001
+            print(f"[ingest] ⚠️ embed retry still failing for {doc['file_name']}: {e}")
+            return {"doc_id": doc_id, "status": "degraded",
+                    "chunk_count": doc["chunk_count"], "reason_code": str(e)[:200]}
+
+        store.set_document_status(doc_id, "indexed", chunk_count=doc["chunk_count"])
+        print(f"[ingest] ✅ {doc['file_name']}: embed retry succeeded, now indexed")
+        return {"doc_id": doc_id, "status": "indexed", "chunk_count": doc["chunk_count"]}
+
     path = Path(doc["stored_path"])
     from docstore.extractors import ExtractError
 
@@ -524,6 +555,14 @@ async def register_file(scope_id: str, path: Path, *,
     """
     path = Path(path)
     raw_size = path.stat().st_size
+    # The file's own last-modified time — the real "which copy is current"
+    # signal for a folder with multiple versions of the same document. See
+    # store.py's schema comment for why this beats ingestion date.
+    try:
+        source_modified_at = datetime.fromtimestamp(
+            path.stat().st_mtime, tz=timezone.utc).isoformat(timespec="seconds")
+    except OSError:
+        source_modified_at = None
 
     # Hash the bytes rather than (path, mtime): a file that moved between
     # folders is the same document, and a file that was touched but not edited
@@ -545,6 +584,7 @@ async def register_file(scope_id: str, path: Path, *,
         "status": "pending",
         "source_uri": source_uri or str(path.resolve()),
         "parent_doc_id": parent_doc_id, "job_id": job_id,
+        "source_modified_at": source_modified_at,
     }
     if classification_hint:
         row["data_classification"] = classification_hint

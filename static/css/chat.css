@@ -832,6 +832,28 @@ svg {
   color: var(--ink-2);
 }
 
+.trace-langsmith-link {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  color: var(--ink-3, #64748b);
+}
+
+.trace-langsmith-link:hover {
+  background: var(--sunken, #f1f5f9);
+  color: var(--accent, #2563eb);
+}
+
+.trace-langsmith-link svg {
+  width: 14px;
+  height: 14px;
+  stroke: currentColor;
+  stroke-width: 1.4;
+  fill: none;
+}
+
 .pulse {
   width: 7px; height: 7px;
   border-radius: 50%;

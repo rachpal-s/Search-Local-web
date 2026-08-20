@@ -1,0 +1,96 @@
+SEARCH>
+│   .env
+│   .gitignore
+│   CHANGELOG_V4.md
+│   config.py
+│   main.py
+│   observability.py
+│   requirements.txt
+├───agents
+│   │   critic.py
+│   │   doc_retriever.py
+│   │   extractor.py
+│   │   mermaid_agent.py
+│   │   mermaid_lite_agent.py
+│   │   search.py
+│   │   supervisor.py
+│   │   web_scraper.py
+│   │   wordcloud_agent.py
+│   │   youtube_downloader.py
+│   │   __init__.py
+│   │
+│   ├───lib
+│   │   │   mermaid_lite.py
+│   │   │   wordcloud_lite.py
+│   │   │   __init__.py
+├───data
+│   │   chat.db
+│   │   phoenix_server.log│
+├───docstore
+│   │   archive.py
+│   │   chunker.py
+│   │   code_chunker.py
+│   │   code_extractors.py
+│   │   collections.py
+│   │   corpus.py
+│   │   entity_resolver.py
+│   │   extractors.py
+│   │   filetypes.py
+│   │   graph_hydrate.py
+│   │   graph_store.py
+│   │   ingest.py
+│   │   pdf_extractor.py
+│   │   retrieve.py
+│   │   session.py
+│   │   store.py
+│   │   __init__.py
+├───jobs
+│   │   graph_pipeline.py
+│   │   models.py
+│   │   pipeline.py
+│   │   runner.py
+│   │   store.py
+│   │   worker.py
+│   │   __init__.py
+├───routers
+│   │   conversations.py
+│   │   jobs.py
+│   │   telemetry.py
+│   │   uploads.py
+│   │   __init__.py
+├───scraper
+│   │   cleaner.py
+│   │   crawler.py
+│   │   detector.py
+│   │   engine.py
+│   │   relevance.py
+│   │   __init__.py
+├───scripts
+│       backfill_source_dates.py
+│       __init__.py
+├───static
+│   ├───css
+│   │       chat.css
+│   │       collections.css
+│   │       jobs.css
+│   │       style.css
+│   │
+│   ├───downloads
+│   └───js
+│           chat.js
+│           jobs.js
+│           script.js
+│           telemetry.js
+├───templates
+│       chat.html
+│       index.html
+│       jobs.html
+│       telemetry.html
+├───workflow
+│   │   build.py
+│   │   inflight.py
+│   │   registry.py
+│   │   routing.py
+│   │   state.py
+│   │   streaming.py
+│   │   __init__.py

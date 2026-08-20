@@ -26,6 +26,7 @@
     <nav class="jobs-nav" aria-label="Primary">
       <a href="/" class="nav-link">Chat</a>
       <a href="/jobs" class="nav-link is-current" aria-current="page">Jobs</a>
+      <a href="/telemetry" class="nav-link">Telemetry</a>
     </nav>
     <button class="btn primary" id="new-job-btn">New job</button>
   </header>
@@ -61,6 +62,15 @@
       <div class="stat">
         <span class="stat-value" id="stat-failed">0</span>
         <span class="stat-label">Failed</span>
+      </div>
+    </section>
+
+    <section class="panel collections-panel">
+      <div class="panel-head">
+        <h2 class="panel-title">Collections</h2>
+      </div>
+      <div id="collections-list" class="collections-list">
+        <p class="muted">Loading…</p>
       </div>
     </section>
 
@@ -210,6 +220,32 @@
       <p class="form-error" id="new-job-error" hidden></p>
       <button class="btn" id="save-set">Save folder set</button>
       <button class="btn primary" id="start-job">Start job</button>
+    </div>
+  </section>
+
+  <section class="sheet" id="graph-confirm" hidden role="dialog" aria-modal="true"
+           aria-labelledby="graph-confirm-title">
+    <div class="sheet-head">
+      <h2 id="graph-confirm-title">Build knowledge graph</h2>
+      <button class="icon-btn" id="graph-confirm-close" aria-label="Close">✕</button>
+    </div>
+    <div class="sheet-body">
+      <p id="graph-confirm-text"></p>
+      <ul class="graph-confirm-notes">
+        <li>Runs as its own job, separate from ingestion — it will not slow
+          down or interrupt any folder-ingestion job.</li>
+        <li>Reads entities already extracted from this collection's documents;
+          no re-extraction, no LLM cost, no change to existing documents.</li>
+        <li>Time needed scales with document count — a few seconds for a
+          small collection, longer for a large archive. You can keep using
+          the app while it runs.</li>
+        <li>A rebuild replaces the previous graph entirely once it succeeds.
+          If it fails partway, the previous graph (if any) is left untouched.</li>
+      </ul>
+    </div>
+    <div class="sheet-foot">
+      <button class="btn" id="graph-confirm-cancel">Cancel</button>
+      <button class="btn primary" id="graph-confirm-start">Start build</button>
     </div>
   </section>
 

@@ -18,8 +18,19 @@ from fastapi.templating import Jinja2Templates
 
 from config import get_settings
 from docstore import collections as doc_collections
+from docstore import graph_store
 from docstore import session, store
 from docstore.retrieve import context_for_query
+from observability import init_tracing, run_config, trace_url
+# tracing_context() also exists in observability.py (session/user attribution
+# via OpenInference context managers) but is deliberately NOT used at either
+# graph-invocation call site below. Wrapping the streaming astream_events
+# loop in it caused final_response to come back empty from an otherwise
+# successful run — critic scoring the answer, the graph completing cleanly
+# server-side, but the frontend receiving nothing. Root cause not yet
+# isolated; reverted rather than left in while broken. Session/user
+# attribution for Phoenix needs a different mechanism before being
+# reintroduced — see the note in observability.py.
 from routers import conversations, jobs as jobs_router, uploads
 from jobs import store as jobstore
 from workflow import app_graph, inflight
@@ -40,6 +51,40 @@ app.include_router(uploads.router)
 # It only ever writes rows — the worker process (python -m jobs.worker) does the
 # ingesting, so a four-hour batch never competes with chat for CPU here.
 app.include_router(jobs_router.router)
+from routers import telemetry as telemetry_router
+app.include_router(telemetry_router.router)
+
+
+def _check_neo4j_at_boot() -> None:
+    """Loud, specific, and actionable — unlike graph_store's own runtime
+    checks, which stay quiet by design (a query that never touched a graph
+    feature has no reason to know or care about Neo4j's state). At boot,
+    "the operator is watching the console" is a safe assumption, so this is
+    the one place a clear failure message is worth the noise: it turns
+    "why did my graph build just fail" into "oh, I forgot to start Neo4j
+    Desktop" before anyone has to debug it.
+
+    Neo4j itself stays exactly as it was — not auto-launched, not managed by
+    this app. Neo4j Desktop has no scriptable "start database X"
+    non-interactively; there is nothing safe to automate here the way
+    Phoenix's `phoenix serve` could be. This is a diagnostic, not a fix.
+    """
+    if graph_store.is_available():
+        print(f"[boot] 🕸️  Neo4j reachable at {cfg.neo4j_uri} — "
+              f"knowledge graph features are usable.")
+        return
+
+    reason = graph_store.unavailable_reason() or "unknown reason"
+    print("=" * 64)
+    print("⚠️  NEO4J NOT REACHABLE")
+    print(f"    Tried:  {cfg.neo4j_uri}")
+    print(f"    Reason: {reason}")
+    print("    Knowledge graph builds and hydration will not work until this")
+    print("    is fixed — everything else in the app is unaffected either way.")
+    print("    If you're on Neo4j Desktop: open it and start your database,")
+    print("    then either restart this app or just retry — the next graph")
+    print("    build will pick it up without needing a restart.")
+    print("=" * 64)
 
 
 @app.on_event("startup")
@@ -51,6 +96,8 @@ async def _startup() -> None:
     """
     store.init_db()
     jobstore.init_db()
+    init_tracing()
+    _check_neo4j_at_boot()
     os.makedirs(cfg.upload_dir, exist_ok=True)
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
     os.makedirs(getattr(cfg, "job_staging_dir", "data/staging"), exist_ok=True)
@@ -64,6 +111,8 @@ async def _startup() -> None:
           f"embed model {cfg.ollama_embed_model} @ {cfg.embed_dimensions} dims")
     print(f"[boot] 🗂️  ingest roots -> {cfg.ingest_allowed_roots} "
           f"(run `python -m jobs.worker` to process queued jobs)")
+    print(f"[boot] 🔭 telemetry -> "
+          f"{'ON, ' + cfg.phoenix_endpoint if cfg.phoenix_tracing_enabled else 'off (default)'}")
 
 
 def _snippet(text: str, max_chars: int = 220) -> str:
@@ -152,6 +201,39 @@ def _addendum(late: list) -> str:
     )
 
 
+def _best_attempt(final_state: dict) -> tuple[str | None, int | None, str]:
+    """Pick the highest-scoring answer the critic actually evaluated.
+
+    The graph ends with whatever the LAST supervisor loop produced, but a
+    later loop is not necessarily a better one — a critic rejection triggers
+    regeneration, and that regeneration can come back worse or truncated.
+    Taking the last attempt then throws away a better earlier answer, which
+    is exactly the "content wiped after critic evaluation" symptom.
+
+    Uses the critic's own score as the selection signal rather than a proxy
+    like length: it is the actual quality judgement the system already
+    produces. Ties go to the EARLIER attempt (max() is stable) — if a
+    regeneration scored no better, the original stands rather than being
+    churned for nothing.
+
+    Returns (response, score, source) — `source` names which path was taken,
+    so the caller can log it and the trace panel can show it.
+    """
+    attempts = [a for a in (final_state.get("response_attempts") or [])
+                if a.get("response")]
+    if not attempts:
+        return final_state.get("final_response"), final_state.get("eval_score"), "final_state"
+
+    best = max(attempts, key=lambda a: a.get("score", 0))
+    last = attempts[-1]
+
+    if best is last:
+        return best["response"], best["score"], "final_state"
+    return best["response"], best["score"], (
+        f"best_of_{len(attempts)}_attempts (loop {best.get('loop')}, "
+        f"score {best.get('score')} > last loop's {last.get('score')})")
+
+
 def _initial_state(prompt: str, conversation_id: str, doc_blocks: list,
                    attached: list, history: list) -> dict:
     """Seed graph state for one turn.
@@ -166,6 +248,11 @@ def _initial_state(prompt: str, conversation_id: str, doc_blocks: list,
         "conversation_id": conversation_id,
         "context": list(doc_blocks),
         "action_logs": [],
+        "score_history": [],
+        "response_attempts": [],
+        "retrieval_attempts": 0,
+        "dispatch_counts": {},
+        "graph_traces": [],
         "attached_files": attached,
         "chat_history": history,
         "pending_tasks": [],
@@ -197,7 +284,8 @@ async def legacy_form(request: Request):
 
 @app.post("/chat/stream")
 async def chat_stream(request: Request, prompt: str = Form(...),
-                      conversation_id: str = Form(None)):
+                      conversation_id: str = Form(None),
+                      user_id: str = Form(None)):
     """Run one turn, streaming the execution trace as SSE.
 
     Order of operations matters here:
@@ -209,7 +297,14 @@ async def chat_stream(request: Request, prompt: str = Form(...),
       5. fold in late background scrapes
       6. persist the assistant turn AFTER (5), so a reloaded thread shows
          exactly what the user saw rather than the pre-addendum version
+
+    user_id is a mock placeholder until real auth exists — the frontend
+    generates and persists a pseudo-id client-side (static/js/chat.js) so
+    traces are at least distinguishable per browser today. "anonymous" here
+    is only reached by a caller that predates this (e.g. a script hitting
+    the endpoint directly), so tracing degrades gracefully rather than 500ing.
     """
+    user_id = user_id or "anonymous"
     if not conversation_id or not store.get_conversation(conversation_id):
         conversation_id = store.create_conversation()["id"]
 
@@ -258,13 +353,21 @@ async def chat_stream(request: Request, prompt: str = Form(...),
                      else "the attached knowledge collection(s)")
             yield emit(f"📚 Searching {label}...")
             try:
-                doc_blocks, hits = await context_for_query(conversation_id, prompt)
+                doc_blocks, hits, graph_trace = await context_for_query(conversation_id, prompt)
                 if hits:
                     files = sorted({h["file_name"] for h in hits})
                     yield emit(f"📚 {len(hits)} passage(s) from "
                                f"{', '.join(files)} pulled into context.")
                 else:
                     yield emit("📚 No matching passages in the attachments.")
+                if graph_trace:
+                    # Ephemeral, on-demand only — never persisted (see the
+                    # 'complete' event below, which deliberately does not
+                    # include this). A frontend "show reasoning graph" button
+                    # appears only when this event actually arrives; there is
+                    # no separate availability check to keep in sync with it.
+                    yield "data: " + json.dumps({
+                        "type": "graph_trace", **graph_trace}) + "\n\n"
             except Exception as e:
                 yield emit(f"📚 Document search failed: {type(e).__name__}: {e}")
         else:
@@ -286,6 +389,7 @@ async def chat_stream(request: Request, prompt: str = Form(...),
         initial_state = _initial_state(prompt, conversation_id, doc_blocks,
                                        attached, history)
         final_state: dict = {}
+        supervisor_final_response: str | None = None
         # LangGraph's astream_events fires on_chain_end for BOTH the actual
         # graph node AND the internal Runnable wrapper around it, so a single
         # scraper/critic call's action_logs surface twice with identical
@@ -319,6 +423,18 @@ async def chat_stream(request: Request, prompt: str = Form(...),
         # text they end up with.
         # ------------------------------------------------------------------
         answer_streamer = PartialJSONFieldStreamer("final_response")
+        # Safety net: the module's own design says streamed deltas are "never
+        # the source of truth" and get overwritten by graph state at the end
+        # — correct when streaming fails but the state has the real answer.
+        # This exists for the INVERSE failure: streaming succeeds (the
+        # person sees a complete, well-formed answer arrive token by token)
+        # but final_state["final_response"] comes back empty anyway — e.g.
+        # the same JSON that streamed cleanly fails strict json.loads() at
+        # the end over one unescaped character in a code block or Mermaid
+        # diagram. Without this, that real, already-displayed answer gets
+        # thrown away and replaced with a generic "workflow terminated"
+        # message — discarding correct content in favour of a worse one.
+        streamed_answer_text: list[str] = []
         streamed_any = False   # did token streaming actually work this turn?
 
         # ------------------------------------------------------------------
@@ -352,7 +468,9 @@ async def chat_stream(request: Request, prompt: str = Form(...),
         scrape_fanout_active = False
 
         try:
-            async for event in app_graph.astream_events(initial_state, version="v2"):
+            async for event in app_graph.astream_events(
+                initial_state, version="v2",
+                config=run_config(conversation_id, user_id)):
                 kind = event["event"]
                 name = event["name"]
                 ui_message = None
@@ -360,8 +478,14 @@ async def chat_stream(request: Request, prompt: str = Form(...),
                 # 1. Map native LangGraph events to human-readable UI logs
                 if kind == "on_chain_start" and name == "supervisor":
                     # Fresh JSON object incoming — drop any partial state from
-                    # a previous planning loop.
+                    # a previous planning loop. streamed_answer_text mirrors
+                    # this reset for the same reason: a stale answer from an
+                    # earlier, superseded planning loop must not survive as
+                    # the fallback if this newer loop is the one that ends
+                    # up with an empty final_response.
                     answer_streamer.reset()
+                    streamed_answer_text = []
+                    yield "data: " + json.dumps({"type": "answer_reset"}) + "\n\n"
                     ui_message = "🧠 Supervisor is evaluating the context..."
                 elif kind == "on_chain_start" and name in AGENT_REGISTRY:
                     ui_message = f"🔀 Dispatching worker: {name}..."
@@ -388,6 +512,7 @@ async def chat_stream(request: Request, prompt: str = Form(...),
                             delta = answer_streamer.feed(piece)
                             if delta:
                                 streamed_any = True
+                                streamed_answer_text.append(delta)
                                 yield "data: " + json.dumps({
                                     "type": "answer_delta", "text": delta}) + "\n\n"
 
@@ -403,6 +528,21 @@ async def chat_stream(request: Request, prompt: str = Form(...),
                             1 for t in pending if t.get("agent") == "scraper")
                         scrape_fanout_active = scraper_task_count >= 2
 
+                        # Second, more direct source of final_response,
+                        # alongside the "LangGraph" root capture below. That
+                        # capture has proven unreliable — repeatedly empty
+                        # even on a clean, error-free, single-pass run with
+                        # a passing critic score — for a reason not yet
+                        # isolated. supervisor_node's OWN return dict is
+                        # where final_response actually originates (route to
+                        # critic with no tasks IS the node saying "this is my
+                        # answer"), so capturing it here sidesteps whatever
+                        # is going wrong in the aggregate capture, rather
+                        # than continuing to depend on the streamed-token
+                        # recovery fallback to paper over it every time.
+                        if sup_out.get("final_response"):
+                            supervisor_final_response = sup_out["final_response"]
+
                 # 2. Stream the rich action_logs a node returned
                 if kind == "on_chain_end":
                     node_output = event["data"].get("output")
@@ -412,6 +552,13 @@ async def chat_stream(request: Request, prompt: str = Form(...),
                                 continue
                             seen_logs.add(log)
                             yield emit(log)
+                    # Mid-run doc_retriever dispatches can also surface a
+                    # graph trace, same ephemeral/on-demand contract as the
+                    # pre-pass's own graph_trace event above.
+                    if isinstance(node_output, dict):
+                        for trace in node_output.get("graph_traces") or []:
+                            yield "data: " + json.dumps({
+                                "type": "graph_trace", **trace}) + "\n\n"
 
                 # 2a. LIVE SOURCE CARD — one scraper task in an active fanout
                 #     just finished. Emit its card the instant it lands, not
@@ -464,7 +611,11 @@ async def chat_stream(request: Request, prompt: str = Form(...),
             print(f"\n🔥 GRAPH EXECUTION FAILED: {e}")
             yield emit(f"🔥 Graph execution failed: {type(e).__name__}: {e}")
 
-        final_response = final_state.get("final_response")
+        final_response, best_score, selection_source = _best_attempt(final_state)
+        if selection_source != "final_state":
+            msg = f"🏆 Selected the best-scoring attempt: {selection_source}."
+            print(f"[STREAM] {msg}")
+            yield emit(msg)
         context = list(final_state.get("context") or doc_blocks)
 
         # ---- 4. Post-graph: fold in deferred background renders ----
@@ -494,9 +645,54 @@ async def chat_stream(request: Request, prompt: str = Form(...),
             inflight.cleanup(run_id)
 
         if not final_response:
+            if supervisor_final_response:
+                # The direct capture, not a reconstruction — strictly better
+                # than the streamed-text recovery below when available, since
+                # this IS the exact value the node returned, not text
+                # rebuilt from individual tokens.
+                final_response = supervisor_final_response
+                print("[STREAM] ⚠️ final_state had no final_response; used "
+                      "the direct supervisor-node capture instead.")
+            else:
+                recovered = "".join(streamed_answer_text).strip()
+                if recovered:
+                    # The graph's own state came back empty, but a complete
+                    # answer was already streamed to and shown for this exact
+                    # turn — almost always because the same JSON that streamed
+                    # cleanly failed strict validation at the end (one unescaped
+                    # character in a code block or diagram is enough). Losing
+                    # already-correct, already-displayed content to a generic
+                    # error message would be a strictly worse outcome than
+                    # using it, so it becomes the answer instead of being
+                    # discarded.
+                    final_response = recovered
+                    print("[STREAM] ⚠️ final_state had no final_response; "
+                          "recovered it from the streamed token buffer instead.")
+                else:
+                    final_response = (
+                        "⚠️ **Workflow terminated** without producing a final answer. "
+                        "The execution trace and retrieved evidence have the detail.")
+
+        # Explicit low-confidence signal: route_from_critic() only ever exits
+        # without looping again for three reasons — the score passed, the
+        # loop cap was hit, or the score plateaued (workflow/routing.py).
+        # A final eval_score still below threshold here means it was one of
+        # the latter two, not the first — the answer above is the best the
+        # system produced, but it was never actually approved. Silently
+        # returning it looking identical to a passing answer would hide
+        # that distinction from the person reading it.
+        # The SELECTED attempt's score, not the last loop's — those differ
+        # whenever _best_attempt() picked an earlier answer, and the
+        # disclaimer must describe the answer actually being shown.
+        final_eval_score = best_score if best_score is not None else final_state.get("eval_score", 0)
+        if (final_eval_score and final_eval_score < cfg.critic_pass_threshold
+                and "Workflow terminated" not in final_response):
             final_response = (
-                "⚠️ **Workflow terminated** without producing a final answer. "
-                "The execution trace and retrieved evidence have the detail.")
+                f"⚠️ *Low confidence (critic score {final_eval_score}/100 — "
+                f"stopped without reaching the {cfg.critic_pass_threshold} "
+                f"threshold, either from repeated attempts or a plateaued score). "
+                f"Treat the answer below as a best effort, not a verified one.*\n\n"
+                f"{final_response}")
 
         feedback = final_state.get("feedback")
         action_logs = list(final_state.get("action_logs") or collected_logs)
@@ -522,12 +718,14 @@ async def chat_stream(request: Request, prompt: str = Form(...),
 
 
 @app.post("/chat")
-async def chat_once(prompt: str = Form(...), conversation_id: str = Form(None)):
+async def chat_once(prompt: str = Form(...), conversation_id: str = Form(None),
+                    user_id: str = Form(None)):
     """Non-streaming single-shot turn. Kept for scripted/CLI callers.
 
     Returns JSON rather than HTML — the UI uses /chat/stream, so rendering a
     template here would only duplicate the transcript logic.
     """
+    user_id = user_id or "anonymous"
     if not conversation_id or not store.get_conversation(conversation_id):
         conversation_id = store.create_conversation()["id"]
 
@@ -547,14 +745,20 @@ async def chat_once(prompt: str = Form(...), conversation_id: str = Form(None)):
     doc_blocks: list = []
     if attached:
         try:
-            doc_blocks, _hits = await context_for_query(conversation_id, prompt)
+            doc_blocks, _hits, _graph_trace = await context_for_query(conversation_id, prompt)
         except Exception as e:
             print(f"[CHAT] ⚠️ Document search failed: {e}")
 
     try:
         final_state = await app_graph.ainvoke(
-            _initial_state(prompt, conversation_id, doc_blocks, attached, history))
-        final_output = final_state.get("final_response")
+            _initial_state(prompt, conversation_id, doc_blocks, attached, history),
+            config=run_config(conversation_id, user_id))
+        # Same selection as the streaming endpoint. This one matters more,
+        # not less: there is no frontend guard on this path at all, so a
+        # worse final loop would be the only answer the caller ever sees.
+        final_output, _best_score, selection_source = _best_attempt(final_state)
+        if selection_source != "final_state":
+            print(f"[CHAT] 🏆 Selected the best-scoring attempt: {selection_source}.")
         context = list(final_state.get("context") or doc_blocks)
 
         if inflight.pending_count(run_id):

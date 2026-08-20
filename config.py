@@ -198,12 +198,120 @@ class Settings(BaseSettings):
     # Retrieval over uploaded documents
     # ------------------------------------------------------------------
     rag_top_k: int = 6
+    # How strongly retrieval prefers the more recently modified source when
+    # candidates are otherwise close — 0.15 = up to a 15% score nudge, only
+    # enough to flip near-ties, not override a clearly better semantic match
+    # from an older document. Set to 0 to disable and restore pure relevance
+    # ranking.
+    rag_recency_weight: float = 0.15
+    # Max chunks any single document can contribute to one answer's context.
+    # Without this, several near-duplicate chunks from ONE version (old or
+    # new) can fill the whole context window and leave no room for the other
+    # version to be seen and compared at all.
+    rag_max_chunks_per_doc: int = 3
+
+    # ---------------- knowledge graph (v0: entity co-occurrence) ----------------
+    # Points at your existing offline Neo4j instance. Everything graph-related
+    # fails open if this is wrong or Neo4j is down — no graph, retrieval works
+    # exactly as it does today, nothing else in the app is affected.
+    neo4j_uri: str = "bolt://localhost:7687"
+    neo4j_user: str = "neo4j"
+    neo4j_password: str = "neo4j"
+    neo4j_database: str = "neo4j"
+    # Two mentions with compatible-but-not-identical names (e.g. "Rachpal
+    # Singh" and "R Singh") only merge into one graph node when their
+    # combined evidence score clears this bar — see docstore/entity_resolver.py
+    # for what counts as evidence. Higher = more conservative (more distinct
+    # nodes, fewer false merges); lower = more aggressive merging.
+    graph_merge_threshold: float = 0.62
+    # Facts pulled into the LLM's TEXT context per collection — words in a
+    # prompt tolerate more volume than a diagram does.
+    graph_hydrate_facts_per_collection: int = 12
+    # Total nodes shown in the ON-DEMAND VISUAL trace, across ALL collections
+    # combined, prioritized by edge weight. A separate, tighter number from
+    # the one above on purpose: readable as a diagram is a much lower bar
+    # than useful as words an LLM can skim.
+    graph_trace_max_nodes: int = 15
+    # Hard cap on how long graph hydration is allowed to add to a query's
+    # latency. Every Neo4j call in docstore/graph_store.py is a blocking
+    # synchronous call — first-connection especially, since verify_connectivity()
+    # is a real network round trip. Without this bound, a slow or unreachable
+    # Neo4j (a misconfigured database name, a firewall, the server being down)
+    # freezes the request indefinitely — not gracefully degraded, genuinely
+    # stuck. On timeout, hydration is treated exactly like "no graph exists":
+    # skipped, logged, the main answer proceeds unaffected.
+    graph_hydrate_timeout_s: float = 2.5
+
+    # ---------------- observability (self-hosted Arize Phoenix) ----------------
+    # Default OFF — see observability.py for the full rationale. Started with
+    # LangSmith; switched to Phoenix because LangSmith's self-hosting is an
+    # Enterprise-licensed add-on, discovered only after building against it.
+    # Phoenix is MIT-licensed, genuinely self-hostable, and OpenTelemetry-native
+    # — the actual vendor-neutral industry standard, not one vendor's format.
+    #
+    # NOTE the package name carefully if you ever touch this: `arize-otel`
+    # (no "phoenix") points at Arize's separate COMMERCIAL cloud platform and
+    # needs a paid space_id/api_key. `arize-phoenix-otel` is the open-source,
+    # self-hosted one this app actually uses. Easy to grab the wrong one.
+    phoenix_tracing_enabled: bool = False
+    phoenix_endpoint: str = "http://localhost:6006"   # Phoenix server's default port
+    phoenix_api_key: str = ""    # only needed if your instance has auth enabled
+    phoenix_project: str = "chat-app"
+    # Points at Phoenix's general UI, not a guessed per-conversation deep
+    # link — I could not confirm Phoenix's exact session-deep-link URL
+    # structure from documentation, and guessing wrong here (as happened
+    # with the LangSmith URL template) produces a dead link that looks like
+    # it should work. Safer to land on the UI and let the person filter by
+    # session_id (== conversation_id) themselves, using Phoenix's own filter
+    # UI, until the real deep-link path is confirmed against a live instance.
+    phoenix_trace_url_template: str = "{endpoint}"
+    # Auto-launch `phoenix serve` as a genuine SEPARATE OS process (not
+    # embedded — Arize's own guidance is that in-process launch is a
+    # notebook-only mode and "may not work as expected" in a real app) when
+    # tracing is enabled and nothing is already listening at phoenix_endpoint.
+    # Set False if Phoenix is managed independently (systemd, Docker, its
+    # own supervisor) and this app should only ever connect to it, never
+    # start it.
+    phoenix_auto_launch: bool = True
+    # Graph building runs as its OWN opt-in job kind, deliberately separate
+    # from ingestion — embedding already takes real time, and nobody should
+    # have graph construction silently tacked onto a folder-ingestion run
+    # they didn't ask to be slower.
+    graph_build_workers: int = 0   # 0 = auto, same rule as ingestion jobs
+
+    # ---------------- critic loop ----------------
+    # Below this score (0-100), route_from_critic() sends the response back
+    # to the supervisor for another pass instead of returning it. Was a bare
+    # constant in workflow/routing.py; moved here so it's one setting instead
+    # of a value buried in routing logic, and so the critic's own prompt
+    # (agents/critic.py) can reference the SAME number rather than an
+    # independently hardcoded one that could silently drift out of sync.
+    critic_pass_threshold: int = 45
+    # A retry that isn't improving is wasted latency, not diligence. If the
+    # score gained less than this many points over the PREVIOUS attempt, the
+    # loop stops even below critic_pass_threshold rather than spending
+    # another full regeneration + evaluation cycle on a plateaued answer.
+    critic_min_improvement: int = 5
+    # Bounded separately from the critic loop count on purpose: "how many
+    # times should the answer be regenerated" and "how many times should we
+    # re-query the same corpus hoping for a different result" are different
+    # questions. A corpus that didn't have the answer the first time won't
+    # have it the third — retrying retrieval past this just burns loops.
+    max_retrieval_attempts: int = 2
+    # General ceiling on how many times ANY single agent can be dispatched
+    # within one turn. Distinct from max_loops (which bounds supervisor
+    # iterations) — a supervisor that keeps re-dispatching the same worker
+    # every loop, each time producing another artifact, burns loops and
+    # confuses the answer. Observed with mermaid_generator: four diagrams
+    # generated across four loops, all four presented as the answer, when
+    # the first had already succeeded.
+    max_dispatches_per_agent: int = 2
 
     # ---------------- batch ingestion jobs ----------------
     # Folders outside these roots are refused by the jobs API. Without the
     # confinement the folder textbox on the job form is an arbitrary-file-read
     # endpoint. os.pathsep separated (":" on Linux, ";" on Windows).
-    ingest_allowed_roots: str = "C:\\RS\\Personal (Desktop)" #"data/incoming"
+    ingest_allowed_roots: str = "data/incoming"
     job_staging_dir: str = "data/staging"
     job_default_workers: int = 0          # 0 = cores minus 25% headroom
     job_embed_concurrency: int = 4        # network-bound; independent of cores

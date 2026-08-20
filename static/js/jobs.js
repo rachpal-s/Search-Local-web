@@ -14,6 +14,8 @@
     ["expand",   "Expand archives"],
     ["discover", "Discover files"],
     ["ingest",   "Ingest documents"],
+    ["resolve",  "Resolve entities"],
+    ["write",    "Write to graph"],
     ["verify",   "Verify"],
   ];
 
@@ -154,6 +156,87 @@
     }
   }
 
+  // ── collections panel ─────────────────────────────────────────────
+
+  const GRAPH_LABEL = {
+    none: "No graph", building: "Building…", ready: "Graph ready",
+    stale: "Graph stale", failed: "Build failed",
+  };
+
+  let pendingGraphCollection = null;   // {id, name} awaiting confirm
+
+  async function loadCollections() {
+    const box = $("collections-list");
+    try {
+      const { collections } = await api("/api/collections");
+      if (!collections.length) {
+        box.innerHTML = '<p class="muted">No collections yet. Run an ' +
+          'ingestion job to create one.</p>';
+        return;
+      }
+      box.innerHTML = collections.map((c) => {
+        const g = c.graph || { status: "none", stale: false };
+        const label = GRAPH_LABEL[g.stale ? "stale" : g.status] || "No graph";
+        const canBuild = g.status === "none" || g.status === "failed";
+        const canRebuild = g.status === "ready" || g.status === "stale";
+        const building = g.status === "building";
+        return `<div class="coll-panel-row">
+          <div class="coll-panel-main">
+            <span class="coll-panel-name">${esc(c.name)}</span>
+            <span class="coll-panel-meta">${num(c.documents)} docs · ${num(c.chunks)} chunks</span>
+          </div>
+          <span class="graph-badge" data-status="${esc(g.stale ? "stale" : g.status)}">
+            ${esc(label)}${g.stats && g.stats.nodes ? ` · ${num(g.stats.nodes)} entities` : ""}
+          </span>
+          ${canBuild ? `<button class="btn small" data-graph-build="${esc(c.id)}" data-graph-name="${esc(c.name)}">Build graph</button>` : ""}
+          ${canRebuild ? `<button class="btn small" data-graph-build="${esc(c.id)}" data-graph-name="${esc(c.name)}">Rebuild</button>` : ""}
+          ${building ? '<button class="btn small" disabled>Building…</button>' : ""}
+        </div>`;
+      }).join("");
+    } catch (e) {
+      box.innerHTML = `<p class="muted">Couldn't load collections. ${esc(e.message)}</p>`;
+    }
+  }
+
+  $("collections-list").addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-graph-build]");
+    if (!btn) return;
+    pendingGraphCollection = { id: btn.dataset.graphBuild, name: btn.dataset.graphName };
+    $("graph-confirm-text").textContent =
+      `Build a knowledge graph for "${pendingGraphCollection.name}"? This helps ` +
+      `answers connect related facts across documents in this collection — ` +
+      `for example, recognising that two differently-worded mentions refer to ` +
+      `the same person, company, or thing.`;
+    $("graph-confirm").hidden = false;
+    $("scrim").hidden = false;
+  });
+
+  function closeGraphConfirm() {
+    $("graph-confirm").hidden = true;
+    $("scrim").hidden = true;
+    pendingGraphCollection = null;
+  }
+  $("graph-confirm-close").addEventListener("click", closeGraphConfirm);
+  $("graph-confirm-cancel").addEventListener("click", closeGraphConfirm);
+
+  $("graph-confirm-start").addEventListener("click", async () => {
+    if (!pendingGraphCollection) return;
+    const { id, name } = pendingGraphCollection;
+    $("graph-confirm-start").disabled = true;
+    try {
+      const job = await api(`/api/collections/${id}/graph/build`, { method: "POST" });
+      closeGraphConfirm();
+      toast(`Building the graph for "${name}". Track progress in job history below.`);
+      await loadCollections();
+      await loadJobs();
+      select(job.job_id);
+    } catch (e) {
+      toast(e.message, true);
+    } finally {
+      $("graph-confirm-start").disabled = false;
+    }
+  });
+
   async function loadStats() {
     try {
       const s = await api("/api/jobs/stats");
@@ -215,6 +298,7 @@
         state.stream = null;
         loadStats();
         loadJobs();
+        loadCollections();
       }
     };
     // A dropped SSE connection isn't worth shouting about — the 6s list poll
@@ -554,11 +638,14 @@
     loadJobs();
     loadStats();
     loadWorkerStatus();
+    loadCollections();
 
     // Stops while the tab is hidden so a backgrounded mobile tab isn't polling
     // all afternoon.
     setInterval(() => {
-      if (document.visibilityState === "visible") { loadJobs(); loadStats(); loadWorkerStatus(); }
+      if (document.visibilityState === "visible") {
+        loadJobs(); loadStats(); loadWorkerStatus(); loadCollections();
+      }
     }, 6000);
   });
 })();

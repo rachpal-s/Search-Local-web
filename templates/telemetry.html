@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Telemetry</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/chat.css">
+  <link rel="stylesheet" href="/static/css/jobs.css">
+</head>
+<body class="jobs-body">
+
+  <header class="jobs-header">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span class="brand-name">Telemetry</span>
+    </div>
+    <nav class="jobs-nav" aria-label="Primary">
+      <a href="/" class="nav-link">Chat</a>
+      <a href="/jobs" class="nav-link">Jobs</a>
+      <a href="/telemetry" class="nav-link is-current" aria-current="page">Telemetry</a>
+    </nav>
+    <button class="btn small" id="refresh-btn">↻ Refresh</button>
+  </header>
+
+  <main class="jobs-main">
+
+    <div class="worker-banner" id="status-banner" hidden></div>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2 class="panel-title">Conversations (Phoenix root spans, by conversation_id)</h2>
+        <select id="hours" class="field small">
+          <option value="1">Last hour</option>
+          <option value="24" selected>Last 24h</option>
+          <option value="168">Last 7 days</option>
+        </select>
+      </div>
+      <p class="hint" id="viability-note"></p>
+      <div id="conv-table">
+        <p class="muted">Loading…</p>
+      </div>
+    </section>
+
+  </main>
+
+  <script>
+    window.PHOENIX_ENDPOINT = {{ phoenix_endpoint | tojson }};
+    window.PHOENIX_PROJECT = {{ phoenix_project_id | tojson }};
+  </script>
+  <script src="/static/js/telemetry.js" defer></script>
+</body>
+</html>

@@ -21,10 +21,22 @@ import shutil
 import time
 from pathlib import Path
 
+from config import get_settings
 from docstore import archive, collections, store
+from docstore import graph_store
 from jobs import pipeline
+from jobs import graph_pipeline
 from jobs import store as jobstore
-from jobs.models import PHASE_WEIGHTS, FolderSpec, Job, JobStatus, Phase, utcnow
+from jobs.models import (
+    GRAPH_PHASE_WEIGHTS,
+    PHASE_WEIGHTS,
+    FolderSpec,
+    Job,
+    JobKind,
+    JobStatus,
+    Phase,
+    utcnow,
+)
 
 
 class Cancelled(RuntimeError):
@@ -39,7 +51,9 @@ class JobRunner:
         self.scope_id = job.collection_id
         self.staging = Path("data/staging") / job.job_id
         self._done_weight = 0.0
-        self._total_weight = sum(PHASE_WEIGHTS.values()) or 1.0
+        self._weights = (GRAPH_PHASE_WEIGHTS if job.kind == JobKind.graph_build
+                         else PHASE_WEIGHTS)
+        self._total_weight = sum(self._weights.values()) or 1.0
         self._last_beat = 0.0
 
     # ------------------------------------------------------------ helpers
@@ -63,7 +77,7 @@ class JobRunner:
             raise Cancelled("Cancel requested by operator.")
 
     def _set_progress(self, phase: Phase, fraction: float) -> None:
-        pct = 100.0 * (self._done_weight + PHASE_WEIGHTS[phase] * fraction) / self._total_weight
+        pct = 100.0 * (self._done_weight + self._weights[phase] * fraction) / self._total_weight
         jobstore.update_progress(self.job.job_id,
                                  progress_pct=round(min(pct, 99.5), 1))
 
@@ -249,30 +263,10 @@ class JobRunner:
         self.log(f"Started. Target collection: {coll['name'] if coll else self.scope_id}")
 
         try:
-            # ---- expand ----
-            self._run_phase_sync(Phase.expand, self._phase_expand)
-
-            # ---- discover ----
-            jobstore.update_phase(job_id, Phase.discover, status="running",
-                                  started_at=utcnow())
-            jobstore.update_progress(job_id, current_phase=Phase.discover)
-            work = await self._phase_discover()
-            jobstore.update_phase(job_id, Phase.discover, status="succeeded",
-                                  finished_at=utcnow())
-            self._done_weight += PHASE_WEIGHTS[Phase.discover]
-
-            # ---- ingest ----
-            jobstore.update_phase(job_id, Phase.ingest, status="running",
-                                  started_at=utcnow())
-            jobstore.update_progress(job_id, current_phase=Phase.ingest)
-            await self._phase_ingest(work)
-            jobstore.update_phase(job_id, Phase.ingest,
-                                  status="succeeded" if work else "skipped",
-                                  finished_at=utcnow())
-            self._done_weight += PHASE_WEIGHTS[Phase.ingest]
-
-            # ---- verify ----
-            self._run_phase_sync(Phase.verify, self._phase_verify)
+            if self.job.kind == JobKind.graph_build:
+                await self._run_graph_build()
+            else:
+                await self._run_ingest()
 
             jobstore.update_progress(job_id, progress_pct=100.0, current_phase=None)
             jobstore.set_status(job_id, JobStatus.succeeded)
@@ -282,19 +276,122 @@ class JobRunner:
         except Cancelled as e:
             self._mark_unfinished("skipped")
             jobstore.set_status(job_id, JobStatus.cancelled, str(e))
-            self.log("Cancelled. Documents already indexed remain in the collection; "
-                     "re-running resumes from where this stopped.", "warn")
+            self.log("Cancelled. Work already completed remains; re-running "
+                     "resumes from where this stopped.", "warn")
             return JobStatus.cancelled
 
         except Exception as e:  # noqa: BLE001
             self._mark_unfinished("pending")
             jobstore.set_status(job_id, JobStatus.failed, f"{type(e).__name__}: {e}")
             self.log(f"Failed: {type(e).__name__}: {e}", "error")
+            if self.job.kind == JobKind.graph_build:
+                collections.set_graph_build_failed(self.scope_id)
             return JobStatus.failed
 
         finally:
             shutil.rmtree(self.staging, ignore_errors=True)
             jobstore.prune_events(job_id)
+
+    async def _run_ingest(self) -> None:
+        job_id = self.job.job_id
+
+        # ---- expand ----
+        self._run_phase_sync(Phase.expand, self._phase_expand)
+
+        # ---- discover ----
+        jobstore.update_phase(job_id, Phase.discover, status="running",
+                              started_at=utcnow())
+        jobstore.update_progress(job_id, current_phase=Phase.discover)
+        work = await self._phase_discover()
+        jobstore.update_phase(job_id, Phase.discover, status="succeeded",
+                              finished_at=utcnow())
+        self._done_weight += self._weights[Phase.discover]
+
+        # ---- ingest ----
+        jobstore.update_phase(job_id, Phase.ingest, status="running",
+                              started_at=utcnow())
+        jobstore.update_progress(job_id, current_phase=Phase.ingest)
+        await self._phase_ingest(work)
+        jobstore.update_phase(job_id, Phase.ingest,
+                              status="succeeded" if work else "skipped",
+                              finished_at=utcnow())
+        self._done_weight += self._weights[Phase.ingest]
+
+        # ---- verify ----
+        self._run_phase_sync(Phase.verify, self._phase_verify)
+
+    async def _run_graph_build(self) -> None:
+        """resolve -> write -> verify, over an EXISTING collection's chunks.
+
+        No folders, no extraction, no embedding — this reads what I4 enrich
+        already produced and is the only thing this job kind touches.
+        """
+        from docstore import collections as coll_mod
+
+        job_id = self.job.job_id
+        coll_mod.set_graph_status(self.scope_id, "building")
+
+        if not graph_store.is_available():
+            reason = graph_store.unavailable_reason() or "unknown reason"
+            raise RuntimeError(f"Neo4j is not reachable ({reason}). "
+                              f"Check neo4j_uri/neo4j_user/neo4j_password.")
+
+        # ---- resolve ----
+        jobstore.update_phase(job_id, Phase.resolve, status="running", started_at=utcnow())
+        jobstore.update_progress(job_id, current_phase=Phase.resolve)
+        self._check_cancel()
+
+        threshold = float(getattr(get_settings(), "graph_merge_threshold", 0.62))
+        workers = self.job.options.workers if self.job.options else 0
+        result = await self._to_thread_build_graph(threshold, workers)
+
+        jobstore.update_phase(job_id, Phase.resolve, status="succeeded",
+                              finished_at=utcnow(),
+                              tally={"mentions": result.mention_count,
+                                    "entities": len(result.entities)})
+        self.log(f"Resolved {result.mention_count:,} mention(s) into "
+                 f"{len(result.entities):,} entities and {len(result.edges):,} "
+                 f"relationship(s) in {result.elapsed_ms:,}ms.", phase=Phase.resolve)
+        self._done_weight += self._weights[Phase.resolve]
+        self._set_progress(Phase.resolve, 1.0)
+
+        # ---- write ----
+        jobstore.update_phase(job_id, Phase.write, status="running", started_at=utcnow())
+        jobstore.update_progress(job_id, current_phase=Phase.write)
+        self._check_cancel()
+
+        graph_store.ensure_constraints()
+        graph_store.clear_collection(self.scope_id)   # clean rebuild, never orphaned nodes
+        n_entities = graph_store.upsert_entities(self.scope_id, result.entities)
+        n_edges = graph_store.upsert_cooccurrence_edges(self.scope_id, result.edges)
+
+        jobstore.update_phase(job_id, Phase.write, status="succeeded",
+                              finished_at=utcnow(),
+                              tally={"entities_written": n_entities, "edges_written": n_edges})
+        self.log(f"Wrote {n_entities:,} entity node(s) and {n_edges:,} "
+                 f"relationship(s) to Neo4j.", phase=Phase.write)
+        self._done_weight += self._weights[Phase.write]
+        self._set_progress(Phase.write, 1.0)
+
+        # ---- verify ----
+        jobstore.update_phase(job_id, Phase.verify, status="running", started_at=utcnow())
+        jobstore.update_progress(job_id, current_phase=Phase.verify)
+        stats = graph_store.collection_stats(self.scope_id)
+        chunk_count = store.corpus_stats(self.scope_id)["chunks"]
+        coll_mod.set_graph_status(self.scope_id, "ready",
+                                  chunk_count_at_build=chunk_count, stats=stats)
+        self.log(f"Graph ready: {stats['nodes']:,} nodes, {stats['edges']:,} "
+                 f"edges. This graph reflects {chunk_count:,} chunk(s) as of now — "
+                 f"re-ingesting more documents into this collection will make it "
+                 f"stale until rebuilt.", phase=Phase.verify)
+        jobstore.update_phase(job_id, Phase.verify, status="succeeded", finished_at=utcnow())
+        self._done_weight += self._weights[Phase.verify]
+        self._set_progress(Phase.verify, 1.0)
+
+    async def _to_thread_build_graph(self, threshold: float, workers: int):
+        import asyncio
+        return await asyncio.to_thread(
+            graph_pipeline.build_graph, self.scope_id, threshold, workers)
 
     def _run_phase_sync(self, phase: Phase, fn) -> None:
         job_id = self.job.job_id
@@ -303,7 +400,7 @@ class JobRunner:
         tally = fn() or {}
         jobstore.update_phase(job_id, phase, status="succeeded",
                               finished_at=utcnow(), tally=tally)
-        self._done_weight += PHASE_WEIGHTS[phase]
+        self._done_weight += self._weights[phase]
         self._set_progress(phase, 1.0)
 
     def _mark_unfinished(self, status: str) -> None:

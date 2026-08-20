@@ -195,15 +195,25 @@ async def cancel_job(job_id: str):
 
 @router.post("/api/jobs/{job_id}/rerun", status_code=201)
 async def rerun_job(job_id: str, force: bool = False):
-    """Queue the same folders and options again.
+    """Queue the same work again.
 
-    Without `force` this is cheap: every document already indexed is skipped by
-    content hash, so a re-run picks up only what is new or changed. With
-    `force` the whole collection is rebuilt.
+    For an ingest job: without `force` this is cheap — every document already
+    indexed is skipped by content hash, so a re-run picks up only what is new
+    or changed. With `force` the whole collection is rebuilt.
+
+    For a graph_build job: `force` has no effect — a graph rebuild always
+    reprocesses everything currently in the collection, since it is a
+    from-scratch pass over the collection's current chunks, not an
+    incremental one. Re-running it is exactly the same operation whether or
+    not `force` was set.
     """
     old = jobstore.get_job(job_id)
     if not old:
         raise HTTPException(404, "Job not found.")
+
+    if old.kind.value == "graph_build":
+        job = jobstore.create_graph_job(f"{old.name} (rebuild)", old.collection_id)
+        return job.to_dict()
 
     options = JobOptions(**{**old.options.to_dict(), "force": force})
     job = jobstore.create_job(
@@ -277,6 +287,36 @@ async def search_collections(q: str, top_k: int = 3):
         raise HTTPException(400, "Give something to search for.")
     results = await coll.search_all_collections(q, top_k_per_collection=top_k)
     return {"query": q, "results": results}
+
+
+@router.post("/api/collections/{collection_id}/graph/build", status_code=201)
+async def build_collection_graph(collection_id: str):
+    """Queue a graph_build job for this collection.
+
+    A separate job KIND, not a flag on ingestion — building a graph is
+    something an operator chooses to do on a collection that already exists,
+    at a moment of their choosing, never a side effect of a folder-ingestion
+    run that would make it slower without being asked.
+    """
+    c = coll.get_collection(collection_id)
+    if not c:
+        raise HTTPException(404, "Collection not found.")
+    if c["chunks"] == 0:
+        raise HTTPException(400, "This collection has no chunks yet — ingest "
+                             "documents into it before building a graph.")
+    if c["graph"]["status"] == "building":
+        raise HTTPException(409, "A graph build is already running for this collection.")
+
+    job = jobstore.create_graph_job(f"{c['name']} — knowledge graph", collection_id)
+    return job.to_dict()
+
+
+@router.get("/api/collections/{collection_id}/graph")
+async def collection_graph_status(collection_id: str):
+    c = coll.get_collection(collection_id)
+    if not c:
+        raise HTTPException(404, "Collection not found.")
+    return c["graph"]
 
 
 @router.get("/api/collections")

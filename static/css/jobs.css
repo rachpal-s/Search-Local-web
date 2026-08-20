@@ -93,6 +93,59 @@
   background: var(--warn);
 }
 
+.collections-panel { margin-bottom: 18px; }
+
+.collections-list { display: flex; flex-direction: column; gap: 6px; }
+
+.coll-panel-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  flex-wrap: wrap;
+}
+
+.coll-panel-main { display: flex; flex-direction: column; gap: 1px; min-width: 160px; flex: 1; }
+.coll-panel-name { font-weight: 600; font-size: 0.9rem; }
+.coll-panel-meta { font-family: var(--mono); font-size: 0.75rem; color: var(--muted); }
+
+.graph-badge {
+  padding: 3px 10px;
+  border-radius: 99px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  white-space: nowrap;
+  background: var(--sunken);
+  color: var(--muted);
+}
+
+.graph-badge[data-status="ready"]    { background: #dcfce7; color: #166534; }
+.graph-badge[data-status="building"] { background: #dbeafe; color: #1e40af; }
+.graph-badge[data-status="stale"]    { background: #fef3c7; color: #92400e; }
+.graph-badge[data-status="failed"]   { background: #fee2e2; color: #991b1b; }
+
+.graph-confirm-notes {
+  margin: 12px 0 0;
+  padding-left: 18px;
+  font-size: 0.83rem;
+  line-height: 1.6;
+  color: var(--muted);
+}
+
+.graph-confirm-notes li { margin-bottom: 6px; }
+
+.job-kind-tag {
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: var(--sunken);
+  color: var(--muted);
+}
+
 .stat-strip {
   display: grid;
   grid-template-columns: repeat(6, 1fr);
@@ -648,3 +701,9 @@
     transition-duration: .001ms !important;
   }
 }
+
+.telemetry-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+.telemetry-table th { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); color: var(--muted); font-weight: 600; }
+.telemetry-table td { padding: 8px 10px; border-bottom: 1px solid var(--line); }
+.telemetry-table tr.has-error { background: #fef2f2; }
+.span-chip { display: inline-block; background: var(--sunken); border-radius: 6px; padding: 2px 7px; margin: 1px; font-size: 0.76rem; font-family: var(--mono); }

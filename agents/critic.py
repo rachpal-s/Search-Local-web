@@ -99,6 +99,11 @@ def critic_node(state: AgentState) -> Dict[str, Any]:
     current_time_str = datetime.now(ist_timezone).strftime("%A, %B %d, %Y at %I:%M %p IST")
     source_material = _format_context_for_critic(state.get("context", []))
     pending_note = _format_pending_for_critic(inflight.pending_urls())
+    # Same number route_from_critic() actually gates on (config.py,
+    # critic_pass_threshold). Previously hardcoded to 90 here while the
+    # router gated at a separately hardcoded 85 — two numbers meant to agree
+    # that could silently drift apart. One source of truth now.
+    pass_threshold = get_settings().critic_pass_threshold
 
     prompt = f"""You are an objective Critic Evaluator. 
     Evaluate the following proposed response against the user's original query.
@@ -141,7 +146,7 @@ def critic_node(state: AgentState) -> Dict[str, Any]:
     3. If the Proposed Response contains a local markdown link to a downloaded file (e.g., [Video](/static/downloads/...)), this is a MASSIVE SUCCESS. Score it >90.
 
     Assign a score from 0 to 100 based on how fully, accurately, and safely the response answers the query.
-    If the score is less than 90, provide brief feedback on what is missing or needs re-reasoning.
+    If the score is less than {pass_threshold}, provide brief feedback on what is missing or needs re-reasoning.
 
     Output STRICTLY in the following JSON format:
     {{
@@ -176,5 +181,6 @@ def critic_node(state: AgentState) -> Dict[str, Any]:
             "eval_score": score, 
             "feedback": feedback,
             "critic_loop_count": current_critic_loop,
+            "score_history": [score],
             "action_logs": logs
             }

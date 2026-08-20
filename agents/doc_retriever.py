@@ -34,11 +34,12 @@ async def doc_retriever_node(state: DocRetrieveTaskState) -> Dict[str, Any]:
     if not conversation_id:
         msg = "📚 Document search skipped — no conversation bound to this run."
         print(f"[DOC_RETRIEVER] ⚠️ {msg}")
-        return {"context": [], "action_logs": [msg]}
+        return {"context": [], "action_logs": [msg], "retrieval_attempts": 1}
 
     if not query:
         return {"context": [],
-                "action_logs": ["📚 Document search skipped — empty query."]}
+                "action_logs": ["📚 Document search skipped — empty query."],
+                "retrieval_attempts": 1}
 
     # Scope is this conversation's own uploads PLUS any attached collections
     # (docstore/collections.py). Checking store.corpus_stats(conversation_id)
@@ -54,19 +55,19 @@ async def doc_retriever_node(state: DocRetrieveTaskState) -> Dict[str, Any]:
     if not stats["chunks"]:
         msg = "📚 No documents or attached collections to search in this conversation."
         print(f"[DOC_RETRIEVER] {msg}")
-        return {"context": [], "action_logs": [msg]}
+        return {"context": [], "action_logs": [msg], "retrieval_attempts": 1}
 
     try:
-        blocks, hits = await context_for_query(conversation_id, query)
+        blocks, hits, graph_trace = await context_for_query(conversation_id, query)
     except Exception as e:  # noqa: BLE001 — a retrieval failure must not kill the run
         msg = f"📚 Document search failed: {type(e).__name__}: {e}"
         print(f"[DOC_RETRIEVER] 🔥 {msg}")
-        return {"context": [], "action_logs": [msg]}
+        return {"context": [], "action_logs": [msg], "retrieval_attempts": 1}
 
     if not hits:
         msg = f"📚 No relevant passages found across {stats['chunks']} chunks."
         print(f"[DOC_RETRIEVER] {msg}")
-        return {"context": [], "action_logs": [msg]}
+        return {"context": [], "action_logs": [msg], "retrieval_attempts": 1}
 
     files = sorted({h.get("file_name", "?") for h in hits})
     top = hits[0].get("score")
@@ -74,4 +75,5 @@ async def doc_retriever_node(state: DocRetrieveTaskState) -> Dict[str, Any]:
            f"[{', '.join(files[:3])}{'…' if len(files) > 3 else ''}], top score {top}.")
     print(f"[DOC_RETRIEVER] ✅ {log}")
 
-    return {"context": blocks, "action_logs": [log]}
+    return {"context": blocks, "action_logs": [log], "retrieval_attempts": 1,
+           "graph_traces": [graph_trace] if graph_trace else []}

@@ -30,26 +30,49 @@ class JobStatus(str, Enum):
         return self in {JobStatus.succeeded, JobStatus.failed, JobStatus.cancelled}
 
 
+class JobKind(str, Enum):
+    """What a job actually does. Two, deliberately kept separate:
+
+        ingest       walk folders, extract, chunk, embed — the original job type
+        graph_build  read an EXISTING collection's already-enriched chunks,
+                     resolve entities, write a knowledge graph
+
+    graph_build never runs as a side effect of an ingest job. Embedding
+    already costs real time on a large batch; graph construction is its own
+    opt-in action an operator chooses deliberately, on a collection that
+    already exists, at a time of their choosing — not something that makes
+    every future ingestion run slower by default.
+    """
+    ingest = "ingest"
+    graph_build = "graph_build"
+
+
 class Phase(str, Enum):
     """Batch phases.
 
-    These are NOT the per-document I1..I5 stages — those still run per document
-    inside docstore/ingest.py and are the same code the chat upload path uses.
-    A phase is a batch-level step that only exists because there are many
-    documents: expanding archives, walking folders, then ingesting the resulting
-    work list with bounded parallelism.
+    These are NOT the per-document I1..I5 stages — those still run per
+    document inside docstore/ingest.py and are the same code the chat upload
+    path uses. A phase is a batch-level step that only exists because there
+    are many documents, OR — for graph_build jobs — because building a graph
+    is naturally a few sequential steps over an existing collection.
     """
-    expand   = "expand"     # unpack archives into staging
-    discover = "discover"   # walk folders, hash, build the work list
-    ingest   = "ingest"     # per-document I1..I5, parallel
-    verify   = "verify"     # count what landed, report the tally
+    expand   = "expand"      # ingest: unpack archives into staging
+    discover = "discover"    # ingest: walk folders, hash, build the work list
+    ingest   = "ingest"      # ingest: per-document I1..I5, parallel
+    resolve  = "resolve"     # graph_build: extract mentions, resolve entities
+    write    = "write"       # graph_build: upsert nodes/edges into Neo4j
+    verify   = "verify"      # both: count what landed, report the tally
 
 
-PHASES: list[Phase] = list(Phase)
+PHASES: list[Phase] = [Phase.expand, Phase.discover, Phase.ingest, Phase.verify]
+GRAPH_PHASES: list[Phase] = [Phase.resolve, Phase.write, Phase.verify]
 
 # Rough share of wall-clock, used only to render an honest progress bar.
 PHASE_WEIGHTS: dict[Phase, float] = {
     Phase.expand: 0.05, Phase.discover: 0.10, Phase.ingest: 0.82, Phase.verify: 0.03,
+}
+GRAPH_PHASE_WEIGHTS: dict[Phase, float] = {
+    Phase.resolve: 0.55, Phase.write: 0.40, Phase.verify: 0.05,
 }
 
 
@@ -123,6 +146,7 @@ class Job:
     name: str
     collection_id: str
     collection_name: str = ""
+    kind: JobKind = JobKind.ingest
     status: JobStatus = JobStatus.queued
     set_id: str | None = None
     folders: list[FolderSpec] = field(default_factory=list)
@@ -148,6 +172,7 @@ class Job:
         return {
             **asdict(self),
             "status": self.status.value,
+            "kind": self.kind.value,
             "current_phase": self.current_phase.value if self.current_phase else None,
             "folders": [f.to_dict() for f in self.folders],
             "options": self.options.to_dict(),

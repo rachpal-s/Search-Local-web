@@ -56,7 +56,10 @@ CREATE TABLE IF NOT EXISTS conversations (
     description     TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS ix_conv_updated ON conversations(archived, updated_at DESC);
-CREATE INDEX IF NOT EXISTS ix_conv_kind    ON conversations(kind, title);
+-- ix_conv_kind is created AFTER _migrate() in init_db(), not here — 'kind' is
+-- an additive column on a database that predates it, and an index on a
+-- not-yet-existent column would fail before the migration ever runs. See the
+-- ordering note on init_db().
 
 -- Which collections a chat is allowed to search. Retrieval scope is the
 -- conversation plus its rows here — never implicit, so attaching a corpus stays
@@ -191,6 +194,29 @@ def _migrate(c: sqlite3.Connection) -> None:
         ("documents", "source_uri", "TEXT"),
         ("documents", "parent_doc_id", "TEXT"),
         ("documents", "job_id", "TEXT"),
+        # The file's own last-modified time on disk — NOT when we ingested it.
+        # For a driving licence, a CV, a contract: the file's mtime is a much
+        # more honest "which copy is current" signal than ingestion date,
+        # since a batch job can ingest a five-year-old scan and a same-day
+        # renewal in the same run, seconds apart, with no relationship
+        # between when we happened to run the job and which document is
+        # actually more recent. NULL for chat uploads, where the browser
+        # doesn't reliably expose the original file's mtime.
+        ("documents", "source_modified_at", "TEXT"),
+        # Per-collection knowledge-graph state. 'none' until someone opts in
+        # and builds one — a collection's default behaviour is completely
+        # unaffected by any of this until graph_status leaves 'none'.
+        #   graph_status              none | building | ready | stale | failed
+        #   graph_built_at            when the graph last finished building
+        #   graph_chunk_count_at_build the collection's chunk count at that
+        #                              moment — compared against the current
+        #                              count to detect staleness cheaply,
+        #                              without needing a content hash.
+        #   graph_stats_json          {"nodes": N, "edges": M} for display
+        ("conversations", "graph_status", "TEXT NOT NULL DEFAULT 'none'"),
+        ("conversations", "graph_built_at", "TEXT"),
+        ("conversations", "graph_chunk_count_at_build", "INTEGER"),
+        ("conversations", "graph_stats_json", "TEXT NOT NULL DEFAULT '{}'"),
     ):
         try:
             c.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
@@ -200,11 +226,23 @@ def _migrate(c: sqlite3.Connection) -> None:
 
 
 def init_db() -> None:
-    """Create schema. Safe to call on every boot."""
+    """Create schema. Safe to call on every boot.
+
+    Order matters here in a way it easy to get wrong: CREATE TABLE IF NOT
+    EXISTS is a no-op on a database that already has the table, so on an
+    existing production database, _SCHEMA only ever adds what's genuinely
+    missing. _migrate() must run AFTER that (it needs the table to exist to
+    ALTER it) but BEFORE anything that indexes a migrated column — an index
+    on a column that isn't there yet fails outright, which used to happen
+    here for `kind` on any database created before collections existed.
+    """
     global _fts_available
     with conn() as c:
         c.executescript(_SCHEMA)
         _migrate(c)
+        # Safe only now that source_modified_at / kind / etc. are guaranteed
+        # to exist, on a brand new database and a decades-old one alike.
+        c.execute("CREATE INDEX IF NOT EXISTS ix_conv_kind ON conversations(kind, title)")
         try:
             c.executescript(_FTS_SCHEMA)
             _fts_available = True
@@ -374,11 +412,11 @@ def upsert_document(doc: dict) -> None:
             INSERT INTO documents (id,conversation_id,file_name,media_type,size_bytes,
                 stored_path,status,reason_code,extractor,quality,page_count,chunk_count,
                 data_classification,allowed_principals,pii_tags,warnings,created_at,updated_at,
-                source_uri,parent_doc_id,job_id)
+                source_uri,parent_doc_id,job_id,source_modified_at)
             VALUES (:id,:conversation_id,:file_name,:media_type,:size_bytes,
                 :stored_path,:status,:reason_code,:extractor,:quality,:page_count,:chunk_count,
                 :data_classification,:allowed_principals,:pii_tags,:warnings,:created_at,:updated_at,
-                :source_uri,:parent_doc_id,:job_id)
+                :source_uri,:parent_doc_id,:job_id,:source_modified_at)
             ON CONFLICT(id) DO UPDATE SET
                 status=excluded.status, reason_code=excluded.reason_code,
                 extractor=excluded.extractor, quality=excluded.quality,
@@ -388,7 +426,8 @@ def upsert_document(doc: dict) -> None:
                 pii_tags=excluded.pii_tags, warnings=excluded.warnings,
                 stored_path=excluded.stored_path, updated_at=excluded.updated_at,
                 source_uri=excluded.source_uri, parent_doc_id=excluded.parent_doc_id,
-                job_id=excluded.job_id
+                job_id=excluded.job_id,
+                source_modified_at=COALESCE(excluded.source_modified_at, documents.source_modified_at)
         """, {
             "id": doc["id"], "conversation_id": doc["conversation_id"],
             "file_name": doc.get("file_name", ""),
@@ -413,6 +452,7 @@ def upsert_document(doc: dict) -> None:
             "source_uri": doc.get("source_uri"),
             "parent_doc_id": doc.get("parent_doc_id"),
             "job_id": doc.get("job_id"),
+            "source_modified_at": doc.get("source_modified_at"),
         })
 
 
@@ -464,10 +504,25 @@ def delete_document(doc_id: str) -> None:
 
 
 def document_exists_indexed(doc_id: str) -> bool:
-    """True when this exact content is already ingested — the idempotency gate."""
+    """True when this exact content is already ingested — the idempotency gate.
+
+    'indexed' AND 'degraded' both count. A degraded document went through
+    extraction, chunking, and classification successfully — only the
+    embedding step failed, usually a transient issue (an Ollama timeout under
+    load during a large bulk run, not a problem with the document itself).
+    Its chunks are already saved and already searchable lexically.
+
+    Treating only 'indexed' as done meant every re-run reprocessed every
+    degraded document from scratch — full re-extraction, re-chunking,
+    re-enrichment — for something that only needed its embedding retried.
+    On a large corpus with any embedding flakiness at all, that compounds:
+    each run reprocesses everything degraded in the last one, degrades a
+    fresh subset under the same load, and the "already indexed" set never
+    actually grows the way an operator watching docs_ok expects it to.
+    """
     with conn() as c:
         r = c.execute("SELECT status FROM documents WHERE id=?", (doc_id,)).fetchone()
-    return bool(r and r["status"] == "indexed")
+    return bool(r and r["status"] in ("indexed", "degraded"))
 
 
 # ------------------------------------------------------------------ chunks
@@ -606,8 +661,9 @@ def get_chunks_by_ids(chunk_ids: list[str]) -> dict[str, dict]:
     marks = ",".join("?" * len(chunk_ids))
     with conn() as c:
         rows = c.execute(
-            f"SELECT k.*, d.file_name FROM doc_chunks k "
-            f"JOIN documents d ON d.id=k.doc_id WHERE k.chunk_id IN ({marks})",
+            f"SELECT k.*, d.file_name, d.source_modified_at, d.created_at AS doc_created_at "
+            f"FROM doc_chunks k JOIN documents d ON d.id=k.doc_id "
+            f"WHERE k.chunk_id IN ({marks})",
             chunk_ids).fetchall()
     out = {}
     for r in rows:
@@ -633,3 +689,56 @@ def corpus_stats(conversation_id: str) -> dict:
         vecs = c.execute("SELECT COUNT(*) n FROM chunk_vectors WHERE conversation_id=?",
                          (conversation_id,)).fetchone()["n"]
     return {"documents": docs, "chunks": chunks, "vectors": vecs}
+
+
+# ------------------------------------------------------------------ knowledge graph
+
+def set_graph_status(collection_id: str, status: str, *,
+                     built_at: str | None = None,
+                     chunk_count_at_build: int | None = None,
+                     stats: dict | None = None) -> None:
+    """Update a collection's graph state. Only touches fields explicitly passed."""
+    sets, params = ["graph_status=?"], [status]
+    if built_at is not None:
+        sets.append("graph_built_at=?")
+        params.append(built_at)
+    if chunk_count_at_build is not None:
+        sets.append("graph_chunk_count_at_build=?")
+        params.append(chunk_count_at_build)
+    if stats is not None:
+        sets.append("graph_stats_json=?")
+        params.append(json.dumps(stats))
+    params.append(collection_id)
+    with conn() as c:
+        c.execute(f"UPDATE conversations SET {','.join(sets)} WHERE id=?", params)
+
+
+def get_graph_state(collection_id: str) -> dict:
+    """Graph status plus a cheap, honest staleness check.
+
+    Staleness is chunk-count comparison, not a content hash — cheap, and good
+    enough: if the collection has grown or shrunk since the graph was built,
+    the graph is out of date. It won't catch a document that was replaced
+    with another of identical chunk count, but that is a rare enough edge
+    case not to justify a hash walk on every collection-list render.
+    """
+    with conn() as c:
+        row = c.execute(
+            "SELECT graph_status, graph_built_at, graph_chunk_count_at_build, "
+            "graph_stats_json FROM conversations WHERE id=?",
+            (collection_id,)).fetchone()
+    if not row:
+        return {"status": "none", "built_at": None, "stale": False, "stats": {}}
+
+    status = row["graph_status"] or "none"
+    stats = json.loads(row["graph_stats_json"] or "{}")
+    stale = False
+    if status == "ready":
+        current_chunks = corpus_stats(collection_id)["chunks"]
+        built_chunks = row["graph_chunk_count_at_build"]
+        if built_chunks is not None and current_chunks != built_chunks:
+            stale = True
+            status = "stale"
+
+    return {"status": status, "built_at": row["graph_built_at"],
+           "stale": stale, "stats": stats}

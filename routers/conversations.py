@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from docstore import store
+from observability import trace_url
 
 router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 
@@ -69,3 +70,13 @@ async def delete_conversation(conversation_id: str):
     except OSError:
         pass
     return {"status": "deleted", "id": conversation_id}
+
+
+@router.get("/{conversation_id}/trace-url")
+async def conversation_trace_url(conversation_id: str):
+    """The LangSmith trace link for this thread, or null when telemetry is
+    disabled — the frontend hides the "View trace" link entirely on null
+    rather than showing one that goes nowhere. No conversation-existence
+    check needed: this is a pure URL template substitution, harmless to
+    call for any id including one that never existed."""
+    return {"url": trace_url(conversation_id)}

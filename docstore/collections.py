@@ -66,6 +66,7 @@ def get_collection(collection_id: str) -> dict | None:
     return {"id": row["id"], "name": row["title"],
             "description": row.get("description") or "",
             "created_at": row["created_at"], "updated_at": row["updated_at"],
+            "graph": store.get_graph_state(row["id"]),
             **store.corpus_stats(collection_id)}
 
 
@@ -81,8 +82,32 @@ def list_collections() -> list[dict]:
         out.append({"id": d["id"], "name": d["title"],
                     "description": d.get("description") or "",
                     "created_at": d["created_at"], "updated_at": d["updated_at"],
+                    "graph": store.get_graph_state(d["id"]),
                     **store.corpus_stats(d["id"])})
     return out
+
+
+# ------------------------------------------------------------------ knowledge graph
+
+def set_graph_status(collection_id: str, status: str, *,
+                     chunk_count_at_build: int | None = None,
+                     stats: dict | None = None) -> None:
+    """Thin pass-through to store.set_graph_status, with built_at stamped
+    automatically whenever the status is being set to 'ready' — the one
+    place callers reliably forget to pass a timestamp."""
+    from docstore.store import _now
+    built_at = _now() if status == "ready" else None
+    store.set_graph_status(collection_id, status, built_at=built_at,
+                           chunk_count_at_build=chunk_count_at_build, stats=stats)
+
+
+def set_graph_build_failed(collection_id: str) -> None:
+    """A failed build leaves the PREVIOUS graph (if any) exactly as it was —
+    failing to rebuild should never destroy a graph that was working."""
+    current = store.get_graph_state(collection_id)
+    if current["status"] in ("none", "building"):
+        store.set_graph_status(collection_id, "failed")
+    # else: leave 'ready'/'stale' alone; the old graph is still usable.
 
 
 def find_collection_by_name(name: str) -> dict | None:

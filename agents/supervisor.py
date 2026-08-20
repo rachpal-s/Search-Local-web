@@ -15,6 +15,7 @@ from langchain_ollama import ChatOllama
 from workflow import inflight
 from workflow.registry import AGENT_REGISTRY
 from workflow.state import AgentState
+from workflow.streaming import PartialJSONFieldStreamer
 from config import get_settings
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -203,7 +204,7 @@ CRITICAL DECISION RULES:
 4. TOLERATE ERRORS: If 1 or 2 tasks fail (e.g., 403, 503 errors, or download failures), do NOT get stuck retrying them. 
 5. FORMATTING: If an agent returns a local file path, format it as a clickable Markdown link.
 6. JSON ESCAPING: If you generate Markdown, code blocks, or flowcharts in your "final_response", you MUST properly escape all newlines as \\n and double quotes as \\".
-7. MERMAID SYNTAX: When creating a mermaid script for the `mermaid_generator`, ensure the diagram is compact. You MUST separate graph statements using semicolons (;) instead of line breaks wherever possible to ensure valid JSON payload formatting.
+7. MERMAID SYNTAX: When creating a mermaid script for the `mermaid_generator`, ensure the diagram is compact. You MUST separate graph statements using semicolons (;) instead of line breaks wherever possible to ensure valid JSON payload formatting. Node labels MUST NOT use double quotes (e.g. write A[Client Request] or A[Client_Request], never A["Client Request"]) — mermaid does not require them for plain text labels, and a double quote inside your diagram breaks the OUTER JSON string it is embedded in even when you remember to escape everything else. If a label genuinely needs punctuation a plain bracket cannot hold, use single quotes ('like this') instead — never double quotes, escaped or not.
 8. VISUAL MEDIA: If the gathered context contains extracted images (formatted as Markdown `![alt](url)`), you MUST embed those exact image tags directly into your `final_response` so the user can see the pictures alongside your text.
 
 
@@ -330,11 +331,33 @@ Output STRICTLY in the following JSON format:
         error_log = f"❌ Failed to parse valid JSON from LLM: {e}. Routing directly to Critic."
         logs.append(error_log)
         print(f"[SUPERVISOR] {error_log}")
+
+        # Before giving up: json.loads() needs the WHOLE object to be valid,
+        # so one unescaped quote or control character anywhere — a Mermaid
+        # diagram or code block embedded in final_response is exactly where
+        # this happens — fails the entire parse even when the intended
+        # content is otherwise complete and correct. PartialJSONFieldStreamer
+        # was built for the streaming case but is exactly as useful here: fed
+        # the whole raw_content at once, its lenient scanner extracts what it
+        # can from the final_response field specifically, independent of
+        # whether the rest of the object is well-formed. Recovering real
+        # content here beats a generic error message reaching the critic,
+        # the frontend, and (for the non-streaming /chat endpoint) the ONLY
+        # copy of the answer that exists — main.py's own streamed-token
+        # recovery doesn't cover that endpoint at all.
+        salvage = PartialJSONFieldStreamer("final_response")
+        salvaged_text = salvage.feed(raw_content).strip()
+
         decision = {
             "route": "critic",
             "tasks": [],
-            "final_response": "Error: Failed to process supervisor instructions.",
+            "final_response": salvaged_text or "Error: Failed to process supervisor instructions.",
         }
+        if salvaged_text:
+            salvage_log = (f"♻️ Recovered {len(salvaged_text)} character(s) of the "
+                           f"intended answer despite the malformed JSON.")
+            logs.append(salvage_log)
+            print(f"[SUPERVISOR] {salvage_log}")
 
     return {
         "pending_tasks": decision.get("tasks", []),

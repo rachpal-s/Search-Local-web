@@ -13,6 +13,8 @@ from agents.youtube_downloader import youtube_downloader_node
 from agents.mermaid_agent import mermaid_agent_node
 from agents.mermaid_lite_agent import mermaid_lite_node
 from agents.wordcloud_agent import wordcloud_node
+import functools
+import inspect
 
 AGENT_REGISTRY = {
     "doc_retriever": {
@@ -90,3 +92,50 @@ AGENT_REGISTRY = {
         "func": wordcloud_node,
     },
 }
+
+
+def _with_dispatch_count__OLD(agent_name: str, fn):
+    """Wrap an agent node so every invocation reports its own dispatch.
+
+    Done centrally rather than by editing each agent's return dict: there
+    are eight agents with multiple return paths each (mermaid_agent alone
+    has four), and any one missed would silently under-count and let that
+    agent slip past the cap. Wrapping here means a NEW agent added to the
+    registry is counted automatically, with nothing to remember.
+
+    The count merges via merge_dispatch_counts (workflow/state.py), which
+    sums per key — correct even when several agents run in parallel under
+    Send().
+    """
+    import functools
+
+    @functools.wraps(fn)
+    async def wrapper(state):
+        result = await fn(state)
+        if isinstance(result, dict):
+            result = {**result, "dispatch_counts": {agent_name: 1}}
+        return result
+
+    return wrapper
+
+def _with_dispatch_count(agent_name: str, fn):
+    """Wrap an agent node so every invocation reports its own dispatch."""
+    if inspect.iscoroutinefunction(fn):
+        @functools.wraps(fn)
+        async def wrapper(state):
+            result = await fn(state)
+            if isinstance(result, dict):
+                result = {**result, "dispatch_counts": {agent_name: 1}}
+            return result
+        return wrapper
+    else:
+        @functools.wraps(fn)
+        async def wrapper(state):
+            result = fn(state)
+            if isinstance(result, dict):
+                result = {**result, "dispatch_counts": {agent_name: 1}}
+            return result
+        return wrapper
+
+for _name, _entry in AGENT_REGISTRY.items():
+    _entry["func"] = _with_dispatch_count(_name, _entry["func"])

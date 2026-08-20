@@ -29,6 +29,7 @@
     fileInput: $("file-input"), attachments: $("attachments"),
     trace: $("trace"), traceToggle: $("trace-toggle"), traceClose: $("trace-close"),
     traceStream: $("trace-stream"), tracePulse: $("trace-pulse"),
+    traceLangsmithLink: $("trace-langsmith-link"),
     traceFeedback: $("trace-feedback"), traceContext: $("trace-context"),
     traceDocs: $("trace-docs"),
     collectionsBtn: $("collections-btn"), collectionsSheet: $("collections-sheet"),
@@ -47,8 +48,25 @@
   }
 
   // ── state ────────────────────────────────────────────────────────────
+  // Mock user identity, ahead of real auth. Generated once per browser and
+  // persisted in localStorage — not tied to any account, just enough for
+  // traces to be distinguishable per session today. When real login exists,
+  // this is a one-line swap (read the authenticated id instead) and nothing
+  // else in the tracing plumbing changes, since the backend already treats
+  // user_id as an opaque string.
+  function getOrCreateUserId() {
+    const KEY = "chat_pseudo_user_id";
+    let id = localStorage.getItem(KEY);
+    if (!id) {
+      id = "u_" + (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}_${Math.random()}`);
+      localStorage.setItem(KEY, id);
+    }
+    return id;
+  }
+
   const state = {
     conversationId: null,
+    userId: getOrCreateUserId(),
     threads: [],
     docs: [],              // documents attached to the active thread
     collections: [],       // knowledge collections this thread may also search
@@ -238,6 +256,21 @@
     }
   }
 
+  async function updateTraceLink(conversationId) {
+    if (!conversationId) { el.traceLangsmithLink.hidden = true; return; }
+    try {
+      const { url } = await api(`/api/conversations/${conversationId}/trace-url`);
+      if (url) {
+        el.traceLangsmithLink.href = url;
+        el.traceLangsmithLink.hidden = false;
+      } else {
+        el.traceLangsmithLink.hidden = true;   // telemetry disabled server-side
+      }
+    } catch {
+      el.traceLangsmithLink.hidden = true;   // decorative; a failure here is silent
+    }
+  }
+
   async function selectThread(id) {
     if (state.busy) { toast("Wait for the current answer to finish."); return; }
     stopPolling();
@@ -246,6 +279,7 @@
       state.conversationId = id;
       state.docs = data.documents || [];
       location.hash = id;
+      updateTraceLink(id);
 
       el.convoTitle.textContent = data.conversation.title || "New chat";
       renderCorpusBadge(data.corpus);
@@ -419,9 +453,32 @@
     return wrap;
   }
 
-  function assistantTurn({ content, context, actionLogs, feedback }) {
+  function graphTraceMarkup(hasData) {
+    // Shared between the live (pending) turn and the finished turn, so the
+    // "show reasoning graph" button — and the data behind it — survives the
+    // pendingNode.replaceWith(turn) swap in finishTurn(), instead of
+    // vanishing the instant the answer completes. Losing it there would
+    // leave only the few seconds of streaming to ever click it, which
+    // defeats the point of an on-demand, review-afterward feature.
+    return `<button class="graph-trace-toggle" type="button" ${hasData ? "" : "hidden"}>
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+          <circle cx="4" cy="4" r="2"/><circle cx="12" cy="4" r="2"/>
+          <circle cx="8" cy="12" r="2"/>
+          <path d="M5.5 5.2 7 10.4M10.5 5.2 9 10.4M6 4h4"/>
+        </svg>
+        Show reasoning graph
+      </button>
+      <div class="graph-trace-panel" hidden></div>`;
+  }
+
+  function assistantTurn({ content, context, actionLogs, feedback, graphTrace }) {
     const turn = document.createElement("article");
     turn.className = "turn assistant";
+    const hasGraph = !!(graphTrace && graphTrace.collections && graphTrace.collections.length);
+    if (hasGraph) {
+      turn.insertAdjacentHTML("beforeend", graphTraceMarkup(true));
+      turn._graphTrace = graphTrace;
+    }
     const bubble = document.createElement("div");
     bubble.className = "bubble markdown";
     bubble.innerHTML = md(content);
@@ -439,12 +496,20 @@
     // only fires when the supervisor fanned out multiple scraper tasks (see
     // main.py's scrape_fanout_active gate). A single-source turn never shows
     // this at all, matching the old behaviour exactly.
+    //
+    // .graph-trace-toggle follows the identical pattern for the on-demand
+    // reasoning-graph button: hidden until the first "graph_trace" SSE
+    // event arrives (main.py only ever sends one when hydration actually
+    // found graph-linked entities), so a turn with no graph involvement
+    // shows nothing extra at all — no disabled button, no empty state.
     turn.innerHTML = `<div class="source-cards" hidden></div>
+      ${graphTraceMarkup(false)}
       <div class="bubble">
       <div class="thinking">
         <span class="dots"><i></i><i></i><i></i></span>
         <span class="thinking-step">Supervisor is planning…</span>
       </div></div>`;
+    turn._graphTrace = { collections: [] };   // accumulates across multiple events
     return turn;
   }
 
@@ -757,6 +822,7 @@
     const form = new FormData();
     form.append("prompt", prompt);
     form.append("conversation_id", state.conversationId);
+    form.append("user_id", state.userId);
 
     try {
       const res = await fetch("/chat/stream", { method: "POST", body: form });
@@ -833,15 +899,44 @@
             // once prose is on screen, replacing it with a status line
             // would yank the text the user is mid-sentence on.
             if (step && !streaming) step.textContent = String(data.message).slice(0, 90);
+          } else if (data.type === "answer_reset") {
+            // New supervisor loop starting. Deliberately does NOT clear
+            // liveText — this also fires when critic REJECTS an answer and
+            // the graph loops back for regeneration, and the just-streamed
+            // content at that moment is often a good, complete answer, not
+            // garbage. Clearing it there erased good content the instant
+            // critic finished evaluating — worse than the cosmetic problem
+            // (a concatenated multi-attempt blob during live preview) this
+            // was meant to fix. The live preview is cosmetic either way;
+            // "complete" always supersedes it with the real data.final_response.
+            streaming = false;
           } else if (data.type === "answer_delta") {
             liveText += data.text;
             renderLive();
           } else if (data.type === "answer") {
-            // Confirmed full text. Supersedes anything streamed so far —
-            // and covers the no-streaming case, where this is the first
-            // answer content to arrive.
-            liveText = data.text;
-            renderLive();
+            // Confirmed full text for THIS supervisor loop — but not
+            // necessarily the best one. This event fires on every loop that
+            // produces a final_response with no pending tasks, which
+            // includes regeneration attempts after a critic rejection and
+            // the truncated attempt when max_loops is hit. An unconditional
+            // `liveText = data.text` here is what was still wiping good
+            // content: a later, shorter, worse attempt replacing a complete
+            // earlier one the user was already reading.
+            //
+            // Length is a crude proxy for completeness, but it's the only
+            // signal available client-side, and the failure it prevents
+            // (a full answer replaced by a truncated stub) is far worse
+            // than the one it risks (keeping a longer answer when a genuinely
+            // better shorter one arrived). "complete" still has the final
+            // say either way — it carries the backend's own resolved
+            // final_response, which is the actual source of truth.
+            if (!liveText || data.text.length >= liveText.length) {
+              liveText = data.text;
+              renderLive();
+            } else {
+              traceLog(`↩︎ Kept the longer previous answer (${liveText.length} chars) `
+                + `over a shorter regeneration (${data.text.length} chars).`);
+            }
           } else if (data.type === "source_card") {
             // Live per-source card — see main.py's scrape_fanout_active gate
             // for when this fires. Reveal the (initially hidden) container on
@@ -861,9 +956,19 @@
               ? md(data.feedback)
               : '<p class="muted">No evaluation recorded.</p>';
             traceLog(`⚖️ Critic score: ${data.score}/100`);
+          } else if (data.type === "graph_trace") {
+            // Ephemeral by design — lives only on this DOM node for this
+            // turn, never sent to the server for storage (see main.py's
+            // add_message call, which deliberately excludes it). Reload the
+            // page or reopen this thread and the button is simply gone,
+            // which is the agreed behaviour, not a bug to fix later.
+            const cols = data.collections || [];
+            pending._graphTrace.collections.push(...cols);
+            const btn = pending.querySelector(".graph-trace-toggle");
+            if (cols.length && btn.hidden) btn.hidden = false;
           } else if (data.type === "complete") {
             done = true;
-            finishTurn(pending, data);
+            finishTurn(pending, data, liveText);
           }
         }
       }
@@ -888,15 +993,142 @@
     }
   }
 
-  function finishTurn(pendingNode, data) {
+  // ── reasoning graph (on-demand, ephemeral) ───────────────────────────
+
+  /* Hand-rolled SVG, deliberately no charting library. This runs in the
+     deployed app's own frontend for real end users — not a capability
+     available only in an authoring/assistant context — and this deployment
+     looks offline/restricted-network (local Neo4j, local file paths), so a
+     CDN-loaded dependency is a real risk, not a hypothetical one. A single
+     ring layout is enough at the node counts this ever ships (capped
+     server-side at config.graph_trace_max_nodes, default 15) and needs no
+     physics simulation to look clean. */
+
+  el.transcript.addEventListener("click", (e) => {
+    const btn = e.target.closest(".graph-trace-toggle");
+    if (!btn) return;
+    const turn = btn.closest(".turn");
+    const panel = turn.querySelector(".graph-trace-panel");
+    if (!panel.hidden) {
+      panel.hidden = true;
+      btn.classList.remove("is-open");
+      return;
+    }
+    if (!panel.dataset.rendered) {
+      renderGraphTrace(panel, turn._graphTrace);
+      panel.dataset.rendered = "1";
+    }
+    panel.hidden = false;
+    btn.classList.add("is-open");
+    panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  });
+
+  const GRAPH_PALETTE = {
+    PERSON: "#2563eb", ORG: "#059669", GPE: "#d97706", LOC: "#d97706",
+    NORP: "#db2777", DATE: "#7c3aed", DEFAULT: "#64748b",
+  };
+
+  function renderGraphTrace(container, trace) {
+    const collections = (trace && trace.collections) || [];
+    const nodeMap = new Map();     // lowercase name -> {name, label}
+    const edges = [];              // {a, b, weight} — a/b are lowercase keys
+    let anyStale = false;
+
+    for (const c of collections) {
+      if (c.stale) anyStale = true;
+      for (const f of c.facts || []) {
+        const ek = f.entity.toLowerCase(), rk = f.related.toLowerCase();
+        if (!nodeMap.has(ek)) nodeMap.set(ek, { name: f.entity, label: f.entity_label });
+        if (!nodeMap.has(rk)) nodeMap.set(rk, { name: f.related, label: f.related_label });
+        edges.push({ a: ek, b: rk, weight: f.weight || 1 });
+      }
+    }
+
+    const nodes = [...nodeMap.entries()].map(([key, v]) => ({ key, ...v }));
+    if (!nodes.length) {
+      container.innerHTML = '<p class="muted">No graph data for this answer.</p>';
+      return;
+    }
+
+    const W = 420, H = 380, R = 140, CX = W / 2, CY = H / 2 + 10;
+    const pos = new Map();
+    nodes.forEach((node, i) => {
+      const angle = (2 * Math.PI * i) / nodes.length - Math.PI / 2;
+      pos.set(node.key, { x: CX + R * Math.cos(angle), y: CY + R * Math.sin(angle), angle });
+    });
+
+    const maxWeight = Math.max(...edges.map((e) => e.weight), 1);
+    const edgeSvg = edges.map((e) => {
+      const p1 = pos.get(e.a), p2 = pos.get(e.b);
+      if (!p1 || !p2) return "";
+      const opacity = (0.25 + 0.55 * (e.weight / maxWeight)).toFixed(2);
+      return `<line x1="${p1.x.toFixed(1)}" y1="${p1.y.toFixed(1)}" ` +
+        `x2="${p2.x.toFixed(1)}" y2="${p2.y.toFixed(1)}" ` +
+        `stroke="#94a3b8" stroke-width="1.5" opacity="${opacity}"/>`;
+    }).join("");
+
+    const nodeSvg = nodes.map((node) => {
+      const p = pos.get(node.key);
+      const color = GRAPH_PALETTE[node.label] || GRAPH_PALETTE.DEFAULT;
+      const label = node.name.length > 18 ? `${node.name.slice(0, 17)}…` : node.name;
+      const lx = p.x + Math.cos(p.angle) * 16;
+      const ly = p.y + Math.sin(p.angle) * 16;
+      const anchor = Math.cos(p.angle) > 0.3 ? "start"
+        : Math.cos(p.angle) < -0.3 ? "end" : "middle";
+      return `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="7" ` +
+        `fill="${color}" stroke="#fff" stroke-width="2">` +
+        `<title>${esc(node.name)} (${esc(node.label)})</title></circle>` +
+        `<text x="${lx.toFixed(1)}" y="${ly.toFixed(1)}" font-size="10" fill="#334155" ` +
+        `text-anchor="${anchor}" dominant-baseline="middle">${esc(label)}</text>`;
+    }).join("");
+
+    const names = collections.map((c) => c.collection_name);
+    const caption = names.length === 1
+      ? `From knowledge graph: ${esc(names[0])}`
+      : `From ${names.length} knowledge graph collection(s)`;
+
+    container.innerHTML = `
+      <div class="graph-trace-caption">
+        ${caption}
+        ${anyStale ? '<span class="graph-trace-stale">may be out of date</span>' : ""}
+      </div>
+      <svg viewBox="0 0 ${W} ${H}" class="graph-trace-svg" role="img"
+           aria-label="Reasoning graph showing entities related to this answer">
+        ${edgeSvg}${nodeSvg}
+      </svg>
+      <p class="graph-trace-hint">Shows what the knowledge graph surfaced as related
+        for this question — not necessarily every fact the answer relied on.</p>`;
+  }
+
+  function finishTurn(pendingNode, data, liveTextAtFinish) {
     el.tracePulse.dataset.state = "idle";
     traceLog("🎉 Run complete.");
 
+    // Same guard as the "answer" handler, applied at the point where the
+    // pending turn is actually replaced — this is where the post-critic
+    // wipe was visible: a complete answer on screen, replaced by a shorter
+    // final_response the moment "complete" arrived.
+    //
+    // Backend now resolves final_response through a three-tier fallback
+    // (final_state -> direct supervisor capture -> streamed-token recovery,
+    // see main.py), so it is usually right. But when it lands shorter than
+    // content the user is already reading, that is the truncation case, not
+    // an improvement — keep what is on screen.
+    let content = data.final_response;
+    if (liveTextAtFinish && content && content.length < liveTextAtFinish.length) {
+      traceLog(`↩︎ Final response (${content.length} chars) was shorter than the `
+        + `streamed answer (${liveTextAtFinish.length} chars) — kept the longer one.`);
+      content = liveTextAtFinish;
+    } else if (!content && liveTextAtFinish) {
+      content = liveTextAtFinish;
+    }
+
     const turn = assistantTurn({
-      content: data.final_response || "_No answer was produced. The trace has the detail._",
+      content: content || "_No answer was produced. The trace has the detail._",
       context: data.context || [],
       actionLogs: data.action_logs || state.logs,
       feedback: data.feedback,
+      graphTrace: pendingNode._graphTrace,
     });
     pendingNode.replaceWith(turn);
     scrollToEnd();
@@ -942,10 +1174,22 @@
 
       el.collectionsBody.innerHTML = data.available.map((c) => {
         const on = attachedIds.has(c.id);
+        const g = c.graph || { status: "none" };
+        // Only render anything when there IS a graph — a collection with
+        // none looks exactly like it did before this feature existed. This
+        // is the "made aware where relevant, invisible where not" placement
+        // the graph feature needs: right where someone is deciding whether
+        // to search a collection, not a separate page they'd have to check.
+        const graphTag = (g.status === "ready" || g.status === "stale")
+          ? `<span class="coll-graph-tag" data-status="${esc(g.stale ? "stale" : g.status)}"
+               title="${g.stale ? "Graph may be out of date for this collection" : "Knowledge graph available for this collection"}">
+               ${g.stale ? "graph · stale" : "graph"}
+             </span>` : "";
         return `<div class="coll-row" data-id="${esc(c.id)}">
           <label class="coll-toggle">
             <input type="checkbox" ${on ? "checked" : ""} data-id="${esc(c.id)}">
             <span class="coll-name">${esc(c.name)}</span>
+            ${graphTag}
           </label>
           <span class="coll-meta">${c.documents.toLocaleString()} docs ·
             ${c.chunks.toLocaleString()} chunks</span>
@@ -1080,6 +1324,7 @@
       const data = await api(url, { method: box.checked ? "POST" : "DELETE" });
       state.collections = data.attached || [];
       updateCollectionsCount();
+      updateScopeBanner();
       toast(box.checked
         ? "Attached. This chat can now search that collection."
         : "Detached.");

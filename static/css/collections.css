@@ -130,6 +130,81 @@
   color: var(--muted, #64748b);
 }
 
+/* ── reasoning graph (on-demand) ────────────────────────────────────── */
+
+.graph-trace-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 8px;
+  padding: 5px 11px;
+  border: 1px solid var(--line, #e2e8f0);
+  border-radius: 99px;
+  background: var(--surface, #fff);
+  color: var(--muted, #64748b);
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.graph-trace-toggle svg {
+  width: 13px;
+  height: 13px;
+  stroke: currentColor;
+  stroke-width: 1.3;
+  fill: none;
+}
+
+.graph-trace-toggle:hover,
+.graph-trace-toggle.is-open {
+  border-color: var(--accent, #2563eb);
+  color: var(--accent, #2563eb);
+}
+
+.graph-trace-panel {
+  margin: 0 0 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--line, #e2e8f0);
+  border-radius: 12px;
+  background: #fafbfc;
+}
+
+.graph-trace-caption {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+  font-size: 0.79rem;
+  font-weight: 600;
+  color: var(--ink-2, #334155);
+}
+
+.graph-trace-stale {
+  padding: 1px 8px;
+  border-radius: 99px;
+  background: #fef3c7;
+  color: #92400e;
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.graph-trace-svg {
+  width: 100%;
+  max-width: 420px;
+  height: auto;
+  display: block;
+  margin: 6px auto;
+}
+
+.graph-trace-hint {
+  margin: 6px 0 0;
+  font-size: 0.74rem;
+  color: var(--muted, #64748b);
+  line-height: 1.5;
+}
+
 .rail-link {
   display: flex;
   align-items: center;
@@ -192,6 +267,24 @@
   font-weight: 550;
   font-size: 0.9rem;
   overflow-wrap: anywhere;
+}
+
+.coll-graph-tag {
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: 99px;
+  font-size: 0.66rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  background: #dcfce7;
+  color: #166534;
+  vertical-align: middle;
+}
+
+.coll-graph-tag[data-status="stale"] {
+  background: #fef3c7;
+  color: #92400e;
 }
 
 .coll-meta {
