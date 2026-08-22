@@ -10,9 +10,9 @@ from typing import Any, Dict
 from urllib import response
 
 from langchain_core.messages import HumanMessage
+from langchain_ollama import ChatOllama
 
 from workflow import inflight
-from workflow.llm_client import invoke_with_fallback
 from workflow.registry import AGENT_REGISTRY
 from workflow.state import AgentState
 from workflow.streaming import PartialJSONFieldStreamer
@@ -76,6 +76,20 @@ def supervisor_node(state: AgentState) -> Dict[str, Any]:
     else:
         stagnation_streak = 0
     # ---------------------------------------------------------
+    llm = ChatOllama(
+        base_url=OLLAMA_URL,
+        model=SUPERVISOR_MODEL, 
+        temperature=0,
+        format="json",
+        num_ctx=NUM_CTX,
+        num_predict=8192,
+        # LATENCY: keep the model resident between turns. Without this Ollama
+        # evicts it after ~5 minutes idle, and the next question pays a full
+        # model load before its first token — usually the biggest single
+        # chunk of perceived latency on a local setup.
+        keep_alive=get_settings().ollama_keep_alive,
+    )
+
     capabilities = "\n".join(f"- '{name}': {meta['description']}" for name, meta in AGENT_REGISTRY.items())
     ist_timezone = ZoneInfo("Asia/Kolkata")
     current_time_str = datetime.now(ist_timezone).strftime("%A, %B %d, %Y at %I:%M %p IST")
@@ -211,24 +225,7 @@ Output STRICTLY in the following JSON format:
     print("[SUPERVISOR] ⏳ Invoking LLM for task allocation...")
     # NOTE: `logs` is initialised up in section 1a now — do not reset it here,
     # that would discard the late-result / pending messages.
-    # Retries SUPERVISOR_MODEL a couple of times on transient errors (e.g.
-    # "model temporarily overloaded"); if it's still down, falls back to
-    # CRITIC_MODEL rather than failing the whole run outright.
-    response = invoke_with_fallback(
-        [HumanMessage(content=prompt)],
-        base_url=OLLAMA_URL,
-        model=SUPERVISOR_MODEL,
-        fallback_model=get_settings().ollama_inference_critic_model,
-        format="json",
-        num_ctx=NUM_CTX,
-        num_predict=8192,
-        # LATENCY: keep the model resident between turns. Without this Ollama
-        # evicts it after ~5 minutes idle, and the next question pays a full
-        # model load before its first token — usually the biggest single
-        # chunk of perceived latency on a local setup.
-        keep_alive=get_settings().ollama_keep_alive,
-        log_prefix="[SUPERVISOR]",
-    )
+    response = llm.invoke([HumanMessage(content=prompt)])
     raw_content = response.content.strip()
     raw_content = re.sub(r"^```(?:json)?\s*", "", raw_content, flags=re.IGNORECASE)
     raw_content = re.sub(r"\s*```$", "", raw_content)

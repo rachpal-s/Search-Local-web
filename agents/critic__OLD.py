@@ -16,9 +16,9 @@ from typing import Any, Dict
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from langchain_core.messages import HumanMessage
+from langchain_ollama import ChatOllama
 from config import get_settings
 from workflow import inflight
-from workflow.llm_client import invoke_with_fallback
 from workflow.state import AgentState
 
 # NOTE: kept identical to the original — hardcoded rather than sourced
@@ -73,12 +73,26 @@ def critic_node(state: AgentState) -> Dict[str, Any]:
     print(f"\n[CRITIC] ⚖️ ENTERING CRITIC EVALUATION")
     current_critic_loop = state.get("critic_loop_count", 0) + 1
 
-    # Guard against a null final_response reaching the critic (e.g. every
-    # dispatched task got filtered by the router this turn). Scoring "None"
-    # wastes an LLM call and reports a confusing 0/100 for an answer that
-    # was never written. score_history is deliberately NOT set here — this
-    # isn't a scoring attempt, and letting a phantom 0 in would corrupt the
-    # critic_min_improvement plateau check on the next real pass.
+    # ------------------------------------------------------------------
+    # EMPTY-ANSWER GUARD.
+    #
+    # The supervisor leaves final_response as null whenever it routes to
+    # "agents" — that is correct and expected. But the router can filter
+    # EVERY dispatched task (capped agents, unknown agents, duplicate
+    # payloads) and then fall through to "critic" anyway, because an empty
+    # Send list is not a valid transition. The critic then evaluates the
+    # literal string "None", scores it 0, and reports "the response contains
+    # no content" — a real but entirely uninformative verdict that costs a
+    # full LLM call and reads to the operator like a model failure rather
+    # than a routing one.
+    #
+    # Score 0 is still returned, so route_from_critic sends this back to the
+    # supervisor to synthesize. score_history is deliberately NOT written:
+    # nothing was scored, and letting a phantom 0 in would break the
+    # critic_min_improvement plateau check on the following pass — the next
+    # real score would be measured as an improvement over a non-attempt, or
+    # a second phantom would look like a plateau and terminate the run.
+    # ------------------------------------------------------------------
     if not (state.get("final_response") or "").strip():
         msg = ("No response was synthesized — every dispatched task was filtered "
                "out before it ran. Synthesize an answer from the existing context "
@@ -93,21 +107,29 @@ def critic_node(state: AgentState) -> Dict[str, Any]:
             ],
         }
 
-    # NOTE: originally capped at num_predict=1024 as a latency guard,
-    # reasoning the verdict itself is only a sentence or two of JSON.
-    # REVERTED: CRITIC_MODEL (gpt-oss:120b-cloud) is a reasoning model — it
-    # spends a variable, sometimes large, number of tokens on hidden
-    # chain-of-thought BEFORE it writes the visible JSON answer. 1024 was
-    # enough for the reasoning trace to consume the entire budget and leave
-    # response.content empty, which json.loads() then rejected as
-    # "Expecting value: line 1 column 1 (char 0)" — scored 0, dropped below
-    # the pass threshold, and sent the whole turn back through a full extra
-    # supervisor+critic loop. That extra loop cost far more latency than the
-    # cap ever saved, on top of being a correctness bug. Back to
-    # unbounded-within-context; do not re-cap this without first confirming
-    # the configured critic model isn't a reasoning model, or capping high
-    # enough to cover its reasoning trace + the JSON both.
-    CRITIC_NUM_PREDICT = 8192
+    llm = ChatOllama(
+        base_url=get_settings().ollama_inference_url,
+        model=CRITIC_MODEL, 
+        temperature=0, 
+        format="json",
+        num_ctx=NUM_CTX,
+        # NOTE: originally capped at num_predict=1024 as a latency guard,
+        # reasoning the verdict itself is only a sentence or two of JSON.
+        # REVERTED: CRITIC_MODEL (gpt-oss:120b-cloud) is a reasoning model —
+        # it spends a variable, sometimes large, number of tokens on hidden
+        # chain-of-thought BEFORE it writes the visible JSON answer. 1024 was
+        # enough for the reasoning trace to consume the entire budget and
+        # leave response.content empty, which json.loads() then rejected as
+        # "Expecting value: line 1 column 1 (char 0)" — scored 0, dropped
+        # below the pass threshold, and sent the whole turn back through a
+        # full extra supervisor+critic loop. That extra loop cost far more
+        # latency than the cap ever saved, on top of being a correctness bug.
+        # Back to unbounded-within-context; do not re-cap this without first
+        # confirming the configured critic model isn't a reasoning model, or
+        # capping high enough to cover its reasoning trace + the JSON both.
+        num_predict=8192,
+        keep_alive=get_settings().ollama_keep_alive,
+    )
     ist_timezone = ZoneInfo("Asia/Kolkata")
     current_time_str = datetime.now(ist_timezone).strftime("%A, %B %d, %Y at %I:%M %p IST")
     source_material = _format_context_for_critic(state.get("context", []))
@@ -169,21 +191,7 @@ def critic_node(state: AgentState) -> Dict[str, Any]:
     """
     logs = ["[CRITIC] ⏳ Evaluating final summary response..."]
     print("[CRITIC] ⏳ Evaluating final summary response...")
-    # Retries CRITIC_MODEL a couple of times on transient errors, then falls
-    # back to SUPERVISOR_MODEL if it's still unavailable — reciprocal to the
-    # supervisor's own fallback to CRITIC_MODEL, so either agent can cover
-    # for the other rather than the whole run failing on one model outage.
-    response = invoke_with_fallback(
-        [HumanMessage(content=prompt)],
-        base_url=get_settings().ollama_inference_url,
-        model=CRITIC_MODEL,
-        fallback_model=get_settings().ollama_inference_model,
-        format="json",
-        num_ctx=NUM_CTX,
-        num_predict=CRITIC_NUM_PREDICT,
-        keep_alive=get_settings().ollama_keep_alive,
-        log_prefix="[CRITIC]",
-    )
+    response = llm.invoke([HumanMessage(content=prompt)])
 
     raw_content = response.content.strip()
     raw_content = re.sub(r"^```(?:json)?\s*", "", raw_content, flags=re.IGNORECASE)
