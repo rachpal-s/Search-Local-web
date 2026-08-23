@@ -70,8 +70,14 @@ def youtube_downloader_node(state: YoutubeTaskState) -> Dict[str, Any]:
     try:
         print(f"[YOUTUBE_AGENT] ⏳ Downloading video...")
         logs.append(f"[YOUTUBE_AGENT] ⏳ Downloading video from: {url}")
-
-        with yt_dlp.YoutubeDL(download_opts) as ydl:
+        ydl_opts = {
+            # Replace 'chrome' with 'firefox', 'edge', or 'brave' if necessary
+            'cookiefile': 'cookies.txt', 
+            'js_runtimes': {
+                'node': {}
+            },  
+        }
+        with yt_dlp.YoutubeDL({**download_opts, **ydl_opts}) as ydl:
             info = ydl.extract_info(url, download=True)
 
             # ROOT CAUSE FIX: the old code diffed a before/after glob() of
