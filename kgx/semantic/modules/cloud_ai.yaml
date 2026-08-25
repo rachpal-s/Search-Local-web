@@ -1,0 +1,294 @@
+id: https://kgx.local/ontology/cloud-ai
+name: kgx_cloud_ai
+title: Cloud & AI Domain Module
+version: 0.2.0
+imports:
+  - kgx:upper
+description: >-
+  Domain module for a library of Cloud and AI architecture material, authored
+  for solution architects and engineers working on Python codebases.
+
+  Identity, provenance, bitemporality, Claim reification, sensitivity and
+  namespace isolation all live in upper.yaml and are NOT repeated here. This
+  file contains only what is specific to this domain: 12 classes, 22
+  predicates.
+
+  SCOPE DISCIPLINE (§3): every class exists because a question in
+  competency_questions/cloud_ai.yaml requires it. Terms no CQ needs are not
+  modelled. Additions arrive through the monthly release train, sourced from
+  the OTHER-predicate suggestion queue — never ad hoc.
+
+  DERIVATION: the class list is not invented. It is what a gazetteer pass
+  over 26,018 chunks actually observed. Framework/Library/Platform were
+  collapsed into Technology with a kind slot because the corpus gave no
+  stable boundary between them — Kafka, Kubernetes and FastAPI would each
+  have been arguable in two of the three, and that argument would have run
+  forever in triage.
+
+  CHANGELOG
+  0.2.0  Split from monolithic ontology 0.1.0 when a second domain was
+         admitted; shared layer extracted to upper.yaml. Renamed
+         PredicateEnum -> CloudAiPredicateEnum to avoid collision with the
+         personal module once both are loaded.
+         ADDED Metric class (MINOR, forward-only, backfill optional): the
+         measuredBy predicate referenced "a Metric or SLO" while no such
+         class existed. Evidence: SLA 84 docs, SLO 55, RPO 46, RTO 41,
+         TCO 46, ROI 37, KPI 29, MTTR 25.
+  0.1.0  Initial, competency-question-driven.
+
+prefixes:
+  linkml: https://w3id.org/linkml/
+  kgx:    https://kgx.local/ontology/
+  schema: http://schema.org/
+  skos:   http://www.w3.org/2004/02/skos/core#
+default_prefix: kgx
+default_range: string
+
+enums:
+
+  CloudAiPredicateEnum:
+    description: >-
+      CLOSED relation vocabulary. The extractor emits only these. A relation
+      the model believes exists but cannot name here MUST be emitted as OTHER
+      with a proposed label, routed to the schema-suggestion queue. Silently
+      minting a new edge type is forbidden (anti-pattern #23) — it is exactly
+      how the previous graph ended up with one untyped CO_OCCURS_WITH edge
+      carrying no semantics at all.
+    permissible_values:
+      offeredBy:          {description: "Service -> Vendor that operates it"}
+      runsOn:             {description: "Technology/Service -> platform it executes on"}
+      implements:         {description: "Technology/Service -> Pattern or Protocol it realises"}
+      integratesWith:     {description: "Bidirectional interoperability, no dependency implied"}
+      dependsOn:          {description: "Hard runtime or build dependency; breaks without it"}
+      alternativeTo:      {description: "Substitutable for the same job"}
+      competesWith:       {description: "Commercially opposed offerings"}
+      partOf:             {description: "Component of a larger named thing"}
+      hasCapability:      {description: "Thing -> Capability it provides"}
+      addressesRisk:      {description: "Pattern/Technology -> Risk it reduces"}
+      mitigatedBy:        {description: "Risk -> control. Inverse of addressesRisk."}
+      governedBy:         {description: "Thing -> Regulation constraining it"}
+      requires:           {description: "Precondition that must hold; not a runtime dependency"}
+      exposes:            {description: "Thing -> Protocol or interface it presents"}
+      supersedes:         {description: "Newer thing replaces older. Temporal backbone."}
+      rebrandedAs:        {description: "Same thing, renamed. Azure OpenAI Service -> Azure AI Foundry."}
+      deprecatedBy:       {description: "Marked for retirement by a vendor decision"}
+      benchmarkedAgainst: {description: "Compared on a named Benchmark"}
+      measuredBy:         {description: "Capability -> Metric used to assess it"}
+      appliesTo:          {description: "Regulation/Pattern -> scope of applicability"}
+      contradicts:        {description: "Claim -> Claim asserting the opposite. Never auto-resolved (#56)."}
+      OTHER:              {description: "Escape hatch. Requires proposed_label. Review queue, never the graph."}
+
+  TechnologyKind:
+    description: >-
+      Replaces the arbitrary Framework/Library/Platform class split. The
+      corpus does not support that boundary, so it becomes an attribute
+      rather than a type.
+    permissible_values:
+      framework:     {description: "Application-level, you build inside it (LangGraph, LlamaIndex)"}
+      library:       {description: "Imported dependency (FastAPI, pandas, RapidFuzz)"}
+      platform:      {description: "Runtime or infrastructure you deploy onto (Kubernetes, Istio)"}
+      tool:          {description: "Operated as a standalone utility (Terraform, Argo CD)"}
+      datastore:     {description: "Persistence or streaming engine (Neo4j, Qdrant, Kafka)"}
+      observability: {description: "Telemetry collection or analysis (Prometheus, OTel, Phoenix)"}
+
+  MetricKind:
+    permissible_values:
+      availability: {}
+      latency:      {}
+      recovery:     {description: "RTO, RPO"}
+      cost:         {description: "TCO, ROI"}
+      quality:      {}
+      throughput:   {}
+
+classes:
+
+  Vendor:
+    is_a: Entity
+    class_uri: schema:Organization
+    description: "Commercial operator of Services, or a standards body. AWS, Anthropic, NIST, W3C."
+
+  Service:
+    is_a: Entity
+    class_uri: schema:SoftwareApplication
+    description: >-
+      A vendor-MANAGED offering. The distinction from Technology is
+      operational rather than technical, and it is queryable: "which managed
+      services have I discussed versus which self-hosted stacks" (CQ-005).
+    slots: [offered_by, deployment_scope]
+
+  Technology:
+    is_a: Entity
+    class_uri: schema:SoftwareApplication
+    description: "Self-hosted or open source. technology_kind carries the sub-shape."
+    slots: [technology_kind, language, package_id]
+
+  Model:
+    is_a: Entity
+    description: "A trained model or family. Claude, GPT-4o, Llama 3, nomic-embed-text."
+    slots: [offered_by, model_family, context_window, modality]
+
+  Protocol:
+    is_a: Entity
+    description: "Wire or interface contract. MCP, OAuth 2.0, gRPC, mTLS, SPARQL."
+    slots: [specification_url]
+
+  Pattern:
+    is_a: Entity
+    class_uri: skos:Concept
+    description: >-
+      Reusable architectural approach. RAG, Zero Trust, Service Mesh, Landing
+      Zone, CQRS. The densest class in this corpus by document spread, and
+      the one CQ-006 traverses from.
+
+  Capability:
+    is_a: Entity
+    class_uri: skos:Concept
+    description: >-
+      A quality or function a system provides. Observability, Entity
+      Resolution, Evaluation, FinOps. Distinct from Pattern: a Pattern is
+      HOW, a Capability is WHAT.
+
+  Metric:
+    is_a: Entity
+    description: >-
+      A named measure. SLA, SLO, RTO, RPO, TCO, MTTR. Added in 0.2.0 because
+      measuredBy referenced it while no such class existed — the ontology
+      pointed at something it did not define.
+    slots: [metric_kind, unit, target_value]
+
+  Risk:
+    is_a: Entity
+    description: "Threat or failure mode. Prompt Injection, Hallucination, Vendor Lock-in."
+    slots: [severity, risk_taxonomy_id]
+
+  Regulation:
+    is_a: Entity
+    description: >-
+      Binding external requirement. GDPR, EU AI Act, ISO 42001, NIST AI RMF,
+      DPDP, SR 11-7.
+    slots: [jurisdiction, effective_date]
+
+  Benchmark:
+    is_a: Entity
+    description: "Named evaluation. MTEB, BM25 baselines, MMLU, internal gold sets."
+
+  Person:
+    is_a: Entity
+    class_uri: schema:Person
+    description: >-
+      DELIBERATELY NARROW: cited authors of external sources only. People
+      appearing in personal-namespace documents are modelled by the personal
+      module and never cross into this namespace.
+
+slots:
+  offered_by:        {range: Vendor}
+  deployment_scope:  {description: "regional | global | zonal | edge"}
+  technology_kind:   {range: TechnologyKind}
+  language:          {description: "Primary implementation language; 'python' is the audience default"}
+  package_id:        {description: "PyPI/npm/OCI coordinate — an external stable identifier"}
+  model_family:      {}
+  context_window:    {range: integer}
+  modality:          {multivalued: true}
+  specification_url: {range: uri}
+  metric_kind:       {range: MetricKind}
+  unit:              {}
+  target_value:      {}
+  severity:          {}
+  risk_taxonomy_id:  {description: "OWASP LLM Top 10 id, MITRE ATLAS technique id"}
+  jurisdiction:      {}
+  effective_date:    {range: date}
+
+# ===========================================================================
+# PREDICATE CONSTRAINTS — machine-readable domain/range.
+#
+# Added in 0.3.0 after a 200-chunk pilot showed roughly a third of the
+# highest-confidence claims were type-invalid: "Distributed Tracing
+# implements OpenTelemetry" (backwards), "Evaluation appliesTo Chunking"
+# (appliesTo is declared for Regulation/Pattern subjects). Every one of
+# those violations was already described in the prose above — and prose is
+# a comment to a human, not a constraint to a pipeline (anti-pattern #30).
+#
+# domain      classes permitted as SUBJECT
+# range       classes permitted as OBJECT
+# symmetric   direction carries no meaning; A rel B implies B rel A
+# same_class  subject and object must share a class (a Service supersedes a
+#             Service, never a Pattern)
+#
+# Deliberately PERMISSIVE. The job is to catch structural nonsense, not to
+# adjudicate truth. A constraint tight enough to quarantine arguable claims
+# would quarantine good ones too, and a validation gate nobody trusts gets
+# switched off.
+# ===========================================================================
+predicate_constraints:
+  offeredBy:
+    domain: [Service, Model, Protocol, Technology]
+    range:  [Vendor]
+  runsOn:
+    domain: [Service, Technology, Model, Pattern]
+    range:  [Technology, Service]
+  implements:
+    domain: [Service, Technology, Model]
+    range:  [Pattern, Protocol, Capability]
+  integratesWith:
+    domain: [Service, Technology, Protocol, Model]
+    range:  [Service, Technology, Protocol, Model]
+    symmetric: true
+  dependsOn:
+    domain: [Service, Technology, Pattern, Capability, Model, Protocol]
+    range:  [Service, Technology, Protocol, Capability, Model]
+  alternativeTo:
+    domain: [Service, Technology, Model, Pattern, Protocol]
+    range:  [Service, Technology, Model, Pattern, Protocol]
+    symmetric: true
+  competesWith:
+    domain: [Vendor, Service, Technology, Model]
+    range:  [Vendor, Service, Technology, Model]
+    symmetric: true
+  partOf:
+    domain: [Service, Technology, Capability, Pattern, Protocol, Model]
+    range:  [Service, Technology, Capability, Pattern, Vendor, Regulation]
+  hasCapability:
+    domain: [Service, Technology, Pattern, Model]
+    range:  [Capability]
+  addressesRisk:
+    domain: [Pattern, Technology, Service, Capability, Protocol]
+    range:  [Risk]
+  mitigatedBy:
+    domain: [Risk]
+    range:  [Pattern, Technology, Service, Capability, Protocol]
+  governedBy:
+    domain: [Service, Technology, Pattern, Capability, Model, Risk, Protocol]
+    range:  [Regulation]
+  requires:
+    domain: [Service, Technology, Pattern, Capability, Protocol]
+    range:  [Service, Technology, Capability, Protocol, Regulation]
+  exposes:
+    domain: [Service, Technology]
+    range:  [Protocol]
+  supersedes:
+    domain: [Service, Technology, Model, Protocol, Pattern, Regulation]
+    range:  [Service, Technology, Model, Protocol, Pattern, Regulation]
+    same_class: true
+  rebrandedAs:
+    domain: [Service, Technology, Model, Protocol, Vendor]
+    range:  [Service, Technology, Model, Protocol, Vendor]
+    same_class: true
+  deprecatedBy:
+    domain: [Service, Technology, Model, Protocol]
+    range:  [Service, Technology, Model, Vendor]
+  benchmarkedAgainst:
+    domain: [Model, Service, Technology]
+    range:  [Benchmark, Model]
+  measuredBy:
+    domain: [Capability, Service, Technology, Pattern]
+    range:  [Metric]
+  appliesTo:
+    domain: [Regulation, Pattern]
+    range:  [Service, Technology, Capability, Pattern, Model, Risk, Protocol]
+  contradicts:
+    domain: []          # Claim-to-Claim only; never emitted between entities
+    range:  []
+  OTHER:
+    domain: []          # unconstrained by design; never reaches the served graph
+    range:  []
+    unconstrained: true

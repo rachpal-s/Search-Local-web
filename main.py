@@ -113,7 +113,8 @@ async def _startup() -> None:
           f"(run `python -m jobs.worker` to process queued jobs)")
     print(f"[boot] 🔭 telemetry -> "
           f"{'ON, ' + cfg.phoenix_endpoint if cfg.phoenix_tracing_enabled else 'off (default)'}")
-
+    from kgx import switch
+    switch.install()
 
 def _snippet(text: str, max_chars: int = 220) -> str:
     """Short, sentence-aware excerpt for a live per-source card.

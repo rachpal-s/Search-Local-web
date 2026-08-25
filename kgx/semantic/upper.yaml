@@ -1,0 +1,227 @@
+id: https://kgx.local/ontology/upper
+name: kgx_upper
+title: KGX Upper Ontology (shared across all domain modules)
+version: 0.2.0
+description: >-
+  THE SHARED LAYER. Everything here is domain-agnostic and is built exactly
+  once. Domain modules (cloud_ai.yaml, personal.yaml) import this and add only
+  their own classes, predicates and gazetteer.
+
+  This split is the framework's domain-agnosticism claim made testable (§25
+  rule 5): the system is proven domain-agnostic when the SECOND module costs a
+  fraction of the first, not when the first module is written vaguely enough
+  to cover both. A single ontology spanning "Amazon Bedrock" and "Aadhaar
+  card" would have to be so abstract that it constrains nothing — failing the
+  Prologue's Test 3, where an ontology's power comes from what it forbids.
+
+  CHANGELOG
+  0.2.0  Extracted from cloud_ai ontology 0.1.0 when a second domain was
+         admitted. Added Namespace isolation. CORRECTED the sensitivity model:
+         v0.1 treated non-empty pii_tags as a hard exclusion from extraction,
+         which would have produced an empty graph for the personal domain.
+         Sensitivity now governs REACHABILITY, not existence (see Namespace).
+
+prefixes:
+  linkml:  https://w3id.org/linkml/
+  kgx:     https://kgx.local/ontology/
+  schema:  http://schema.org/
+  skos:    http://www.w3.org/2004/02/skos/core#
+  prov:    http://www.w3.org/ns/prov#
+default_prefix: kgx
+default_range: string
+imports: [linkml:types]
+
+enums:
+
+  Namespace:
+    description: >-
+      THE ISOLATION BOUNDARY, and a control rather than a convention.
+      Every Entity and Claim carries one. Traversal MUST NOT cross namespaces
+      and retrieval MUST NOT return results from a namespace outside the
+      caller's scope. Neo4j Community is single-database, so this is label +
+      property discipline enforced in the repository layer and covered by a
+      test — "cannot", not "shouldn't".
+
+      This is what makes it safe to hold both domains in one system: the
+      personal graph exists and is queryable, but nothing in it can ever be
+      reached from, joined to, or surfaced alongside the Cloud/AI graph.
+    permissible_values:
+      cloud_ai: {description: "Cloud & AI library. Audience: architecture, engineering, governance."}
+      personal: {description: "Personal records. Audience: personal only. Never federated."}
+
+  SourceTier:
+    description: >-
+      MANDATORY on every Claim. The cloud_ai corpus is ~99% self-authored;
+      without a tier the system presents the author's own speculation back as
+      established fact (§19 trust surface).
+    permissible_values:
+      vendor_primary:  {description: "Official vendor documentation or specification"}
+      standards_body:  {description: "NIST, ISO, W3C, OWASP, IETF"}
+      government:      {description: "Issuing authority: UIDAI, passport office, tax authority, university"}
+      third_party:     {description: "Analyst, peer-reviewed, reputable independent publication"}
+      self_authored:   {description: "The owner's own notes, threads, generated drafts"}
+      unknown:         {description: "Provenance not established. Ranks below all others."}
+
+  Sensitivity:
+    description: >-
+      Computed at INDEX time, enforced at QUERY time, fails closed (§1.1).
+      Never inferred by a model at answer time.
+
+      CORRECTED in 0.2.0: restricted_personal no longer means "do not
+      extract". It means "extract only within the personal namespace, and
+      never let it leave". The distinction matters because the previous rule
+      would have deleted an entire domain the owner wants to query.
+    permissible_values:
+      public:              {}
+      internal:            {description: "Default posture"}
+      confidential:        {description: "Commercially sensitive"}
+      restricted_personal: {description: "Contains PII. Confined to namespace=personal. Identifier VALUES are never stored (see Identifier.value_hash)."}
+
+  Audience:
+    description: >-
+      Who the material is FOR. NOT entitlement (anti-pattern #35) — access
+      control is a separate field with separate enforcement. Conflating the
+      two is how a label meant for routing becomes a security decision it was
+      never designed to make.
+    permissible_values:
+      architecture: {}
+      engineering:  {}
+      governance:   {}
+      personal:     {}
+
+  ValidationStatus:
+    description: "Never validate-and-log (anti-pattern #30). Quarantine is a real state with an owner."
+    permissible_values:
+      valid:       {}
+      quarantined: {description: "Failed a SHACL shape. Held for review, not written to the served graph."}
+      rejected:    {description: "Failed span verification. Discarded with reason retained."}
+
+classes:
+
+  Entity:
+    abstract: true
+    description: "Root of the ABox. Opaque identity, alias registry, bitemporal validity, merge lineage."
+    slots: [id, namespace, pref_label, aliases, external_iri, first_seen, last_seen,
+            valid_from, valid_to, recorded_at, superseded_at, merged_into,
+            split_from, ontology_version, module_version]
+    slot_usage:
+      id:
+        description: >-
+          Opaque ULID: urn:kgx:{namespace}:entity:01H8XK... NEVER encodes the
+          label (anti-pattern #28). Things get renamed; identity must not.
+      namespace:
+        required: true
+
+  Source:
+    is_a: Entity
+    class_uri: prov:Entity
+    description: "A document or thread. The unit of provenance and of access control."
+    slots: [doc_id, source_uri, file_name, source_tier, sensitivity, audience,
+            pii_tags, source_modified_at, version_ordinal, supersedes_source,
+            chunk_count, extraction_status]
+    slot_usage:
+      version_ordinal:
+        description: >-
+          Parsed from the FILENAME (v2, "12 March"), not the filesystem. Bulk
+          copying flattened every mtime in this corpus — five Combined_Document
+          snapshots spanning Feb-March all carry the same mtime — so the
+          filename is the more honest ordinal. mtime is the fallback, not the
+          primary.
+
+  Claim:
+    is_a: Entity
+    class_uri: prov:Activity
+    description: >-
+      REIFIED assertion, and the centre of gravity of this ontology (§3 rule 3).
+      The system records what a source ASSERTED at a time, not what is true.
+      Cloud/AI facts decay in months and personal documents get renewed; a bare
+      edge would be a lie in both domains. Reification answers "according to
+      whom, as of when".
+    slots: [subject_iri, predicate_module, predicate, proposed_label, object_iri,
+            evidence_chunk_id, evidence_span_start, evidence_span_end,
+            evidence_text, source_doc_id, source_tier, confidence,
+            confidence_components, negated, qualifier, extraction_route,
+            extractor_model, extractor_version, prompt_version,
+            valid_from, valid_to, recorded_at, superseded_at, validation_status]
+    slot_usage:
+      predicate:
+        description: >-
+          Range is the CLOSED enum of the module named in predicate_module.
+          A relation the extractor believes in but cannot name must be emitted
+          as OTHER with proposed_label, routed to the schema-suggestion queue.
+          Silently minting an edge type is forbidden (anti-pattern #23).
+        required: true
+      evidence_span_start:
+        required: true
+        description: >-
+          Span grounding is MANDATORY. The pipeline verifies
+          chunk_text[start:end] == mention and REJECTS the assertion if not.
+          This one check removes most hallucinated entities (§7 rule 3).
+
+slots:
+
+  id:            {identifier: true}
+  namespace:     {range: Namespace, required: true}
+  pref_label:    {required: true, slot_uri: skos:prefLabel}
+  aliases:
+    multivalued: true
+    slot_uri: skos:altLabel
+    description: >-
+      The alias registry — a retrieval asset, not bookkeeping (§8). Matching is
+      separator-insensitive, so "Retrieval-Augmented Generation", "Retrieval
+      Augmented Generation" and "RAG" are one entity. A flat table without this
+      missed 37 documents of a single term.
+  external_iri:
+    multivalued: true
+    description: "Wikidata QID, CNCF id, PyPI name, HuggingFace id, CVE, ORCID"
+
+  valid_from:    {range: date,     description: "World time: when the fact became true"}
+  valid_to:      {range: date,     description: "World time: when it stopped being true"}
+  recorded_at:   {range: datetime, required: true, description: "System time: when we learned it"}
+  superseded_at: {range: datetime}
+  first_seen:    {range: datetime}
+  last_seen:     {range: datetime}
+
+  merged_into: {description: "Target IRI. The old IRI redirects, never dies — past citations must keep resolving."}
+  split_from:  {multivalued: true, description: "Lineage when a bad merge is undone. You WILL unmerge (§8)."}
+
+  ontology_version: {required: true, description: "Upper version. Stamped on every record; drives backfill."}
+  module_version:   {required: true, description: "Domain module version, versioned independently of upper."}
+
+  doc_id:             {required: true, description: "sha256 content-addressed id from corpus.doc_id_for"}
+  source_uri:         {}
+  file_name:          {}
+  source_tier:        {range: SourceTier,  required: true}
+  sensitivity:        {range: Sensitivity, required: true}
+  audience:           {range: Audience, multivalued: true}
+  pii_tags:           {multivalued: true, description: "Non-empty forces sensitivity=restricted_personal and namespace=personal"}
+  source_modified_at: {range: datetime}
+  version_ordinal:    {range: integer}
+  supersedes_source:  {description: "doc_id of the version this retires"}
+  chunk_count:        {range: integer}
+  extraction_status:  {description: "ok | empty | failed. 0-chunk docs must not silently index."}
+
+  subject_iri:      {required: true}
+  predicate_module: {required: true, description: "Which module's predicate enum applies: cloud_ai | personal"}
+  predicate:        {required: true}
+  proposed_label:   {description: "Populated only when predicate=OTHER. Feeds the suggestion queue."}
+  object_iri:       {required: true}
+  evidence_chunk_id:   {required: true}
+  evidence_span_start: {range: integer, required: true}
+  evidence_span_end:   {range: integer, required: true}
+  evidence_text:       {description: "Verbatim supporting sentence(s)"}
+  source_doc_id:       {required: true}
+  confidence:          {range: float, minimum_value: 0.0, maximum_value: 1.0}
+  confidence_components:
+    description: >-
+      Store the components, not just the score (§7 rule 5). Raw LLM
+      self-report is poorly calibrated:
+      {self_report, span_verified, gazetteer_hit, source_tier_prior, predicate_prior}
+  negated:  {range: boolean, ifabsent: "false",
+             description: "A dropped negation becomes a dangerous assertion. 'MUST NOT use X' inverts without this."}
+  qualifier: {description: "applies_if / except_when. A clause without its qualifier is useless."}
+  extraction_route: {description: "gazetteer | classical | llm | human. Enables per-route precision measurement."}
+  extractor_model:   {required: true, description: "Model version is provenance"}
+  extractor_version: {required: true}
+  prompt_version:    {required: true}
+  validation_status: {range: ValidationStatus}

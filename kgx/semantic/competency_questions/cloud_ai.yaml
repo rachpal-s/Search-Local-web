@@ -1,0 +1,172 @@
+# kgx/semantic/competency_questions.yaml
+#
+# THE SCOPE GATE. An ontology term that no question here needs does not get
+# built (framework §3). Deleting a question deletes work; adding one adds it.
+#
+# Also THE EVAL CONTRACT. Each entry becomes a scored case in run_eval.py.
+# `type: structured` means the graph must answer it by query — RAG cannot,
+# and these are the questions that justify the whole plane existing.
+#
+# STATUS: draft. Every question needs your sign-off. Framework treats SME
+# sign-off as a release gate, and you are the SME here.
+#
+# Questions are drawn from what the corpus demonstrably contains — the
+# document-spread numbers in brackets are from the gazetteer pass, so none of
+# these is aspirational.
+
+version: 0.1.0
+domain: cloud_ai_library
+
+questions:
+
+  # ---------------------------------------------------- temporal / decay
+  - id: CQ-001
+    question: "What have I written about that has since been superseded, deprecated or rebranded?"
+    rationale: >-
+      The single highest-value question for this corpus. Cloud/AI facts have a
+      6-12 month half-life and 464 documents accumulated over years. Dense
+      retrieval structurally cannot answer this — it has no notion of one fact
+      replacing another.
+    requires:
+      classes:    [Service, Model, Technology, Claim]
+      predicates: [supersedes, rebrandedAs, deprecatedBy]
+      reasoning:  [temporal_filter, bitemporal]
+    type: structured
+    audience: [architecture]
+
+  - id: CQ-002
+    question: "What did I believe about MCP six months ago that is no longer accurate?"
+    rationale: "MCP appears in 76 documents. Tests bitemporal reconciliation on a fast-moving protocol."
+    requires:
+      classes:    [Protocol, Claim, Source]
+      predicates: [supersedes, contradicts]
+      reasoning:  [bitemporal, source_ordering]
+    type: hybrid
+
+  # ---------------------------------------------------- trust / provenance
+  - id: CQ-003
+    question: "Which claims in my library rest only on my own writing, with no external source?"
+    rationale: >-
+      ~99% of this corpus is self-authored. Without this question the system
+      will present the author's own speculation back as established fact.
+    requires:
+      classes:    [Claim, Source]
+      properties: [source_tier]
+      reasoning:  [aggregate]
+    type: structured
+    audience: [governance]
+
+  - id: CQ-004
+    question: "Where do two of my documents contradict each other, and on what?"
+    rationale: "Anti-pattern #56 says never silently resolve source conflicts. Surface them instead."
+    requires:
+      classes:    [Claim]
+      predicates: [contradicts]
+      reasoning:  [multi_hop]
+    type: structured
+
+  # ---------------------------------------------------- coverage / aggregate
+  - id: CQ-005
+    question: "How many distinct AWS vs Azure vs GCP services have I actually covered?"
+    rationale: >-
+      Pure aggregate. RAG cannot count (anti-pattern #50). Observed spread:
+      AWS 195 docs, Azure 165, GCP 79 — so the answer is non-trivial and the
+      current co-occurrence graph would get it badly wrong.
+    requires:
+      classes:    [Service, Vendor]
+      predicates: [offeredBy]
+      reasoning:  [aggregate, group_by]
+    type: structured
+
+  - id: CQ-006
+    question: "Which architectural patterns have I covered, and which vendor services implement each?"
+    rationale: "Pattern is the densest class in the corpus. Tests Pattern -> Service traversal."
+    requires:
+      classes:    [Pattern, Service, Technology]
+      predicates: [implements]
+      reasoning:  [multi_hop]
+    type: structured
+
+  - id: CQ-007
+    question: "Which risks do I document with no mitigation captured anywhere?"
+    rationale: >-
+      A gap query — inherently graph-shaped, since it asks for the ABSENCE of
+      an edge. Hallucination appears in 78 docs, Prompt Injection is seeded;
+      whether controls are linked to them is unknown and worth knowing.
+    requires:
+      classes:    [Risk, Pattern, Capability]
+      predicates: [addressesRisk, mitigatedBy]
+      reasoning:  [negation, aggregate]
+    type: structured
+    audience: [governance]
+
+  # ---------------------------------------------------- dependency / impact
+  - id: CQ-008
+    question: "If Protocol X changed, which patterns and services in my library would be affected?"
+    rationale: "Blast-radius traversal. Two-to-three hops; the current 1-hop co-occurrence graph cannot do it."
+    requires:
+      classes:    [Protocol, Service, Technology, Pattern]
+      predicates: [dependsOn, exposes, implements]
+      reasoning:  [multi_hop, transitive]
+    type: structured
+
+  - id: CQ-009
+    question: "What are the alternatives to <technology>, per my own notes, and what did I conclude about each?"
+    rationale: "Entity-centric retrieval; the case for materialized entity cards (§8)."
+    requires:
+      classes:    [Technology, Service, Claim]
+      predicates: [alternativeTo, competesWith]
+      reasoning:  [entity_expansion]
+    type: hybrid
+
+  # ---------------------------------------------------- governance
+  - id: CQ-010
+    question: "Which regulations touch the agentic patterns I propose, and what do they require?"
+    rationale: >-
+      GDPR appears in 85 docs, NIST in 57, OWASP in 34, TOGAF in 28. Real
+      coverage, currently unconnected to the patterns it constrains.
+    requires:
+      classes:    [Regulation, Pattern, Capability]
+      predicates: [governedBy, appliesTo]
+      reasoning:  [multi_hop]
+    type: hybrid
+    audience: [governance, architecture]
+
+  - id: CQ-011
+    question: "Which documents in this collection are not Cloud/AI material at all?"
+    rationale: >-
+      Corpus hygiene, and a direct consequence of the duplicate scan finding
+      identity documents and marksheets in the library. Must be answerable
+      before any of the above is trustworthy.
+    requires:
+      classes:    [Source]
+      properties: [audience, sensitivity, pii_tags]
+      reasoning:  [filter]
+    type: structured
+    audience: [governance]
+
+  # ---------------------------------------------------- retrieval quality
+  - id: CQ-012
+    question: "Show me everything on RAG evaluation, newest first, flagging anything older than 12 months."
+    rationale: >-
+      The head-to-head case against the current pipeline. RAG appears in 134
+      docs and Evaluation in 164, so dense retrieval returns a wall of
+      overlapping results with no version awareness. This is the CQ the
+      compare mode should win on first.
+    requires:
+      classes:    [Pattern, Capability, Source]
+      properties: [version_ordinal, valid_from]
+      reasoning:  [temporal_filter, dedup]
+    type: hybrid
+
+# ---------------------------------------------------------------------------
+# DELIBERATELY EXCLUDED — recorded so the boundary is a decision, not a gap
+# ---------------------------------------------------------------------------
+out_of_scope:
+  - reason: "Personal identity documents (Aadhaar, passports, marksheets) found in the
+             collection. Never extracted; sensitivity=restricted_personal. Belongs in a
+             separate scope entirely."
+  - reason: "Cost/pricing figures. They decay faster than the release train can track and
+             would be wrong more often than right. Revisit if a CQ demands it."
+  - reason: "Code-level API signatures. code_chunker.py already handles code retrieval;
+             promoting signatures to graph nodes duplicates that with no query benefit."

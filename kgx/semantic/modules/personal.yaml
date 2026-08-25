@@ -1,0 +1,196 @@
+id: https://kgx.local/ontology/personal
+name: kgx_personal
+title: Personal Records Module
+version: 0.1.0
+imports:
+  - kgx:upper
+description: >-
+  THE SECOND DOMAIN — and the test of whether this architecture is actually
+  domain-agnostic (§25 rule 5). Seven classes and twelve predicates against
+  the Cloud/AI module's fourteen and twenty-two. If this module costs a day
+  against that one's fortnight, domain-agnosticism is demonstrated rather
+  than asserted.
+
+  SCOPE: namespace=personal, exclusively. Nothing here is reachable from the
+  cloud_ai namespace, by traversal or by retrieval. See upper.yaml Namespace.
+
+  IDENTIFIER VALUES ARE NEVER STORED. An Aadhaar or passport number has no
+  business in a graph node. Identifier holds a TYPE and a salted hash, which
+  is enough to answer "which documents concern the same identity" while the
+  graph itself holds nothing anyone would mind being read. Raw values stay in
+  the chunk text under existing document ACLs.
+
+  RESOLVER NOTE: docstore/entity_resolver.py — surname blocking, "R Singh" ↔
+  "Rachpal Singh" initials logic, folder-as-evidence — is correct for THIS
+  module and wrong for cloud_ai. Resolver strategy is selected per module,
+  not globally. That was always the right design; it was only ever pointed
+  at the wrong corpus.
+
+prefixes:
+  linkml: https://w3id.org/linkml/
+  kgx:    https://kgx.local/ontology/
+  schema: http://schema.org/
+default_prefix: kgx
+default_range: string
+
+enums:
+
+  PersonalPredicateEnum:
+    description: "CLOSED. Twelve relations; OTHER routes to review, never to the graph."
+    permissible_values:
+      identifies:   {description: "Identifier -> Person it designates"}
+      issuedBy:     {description: "Document/Credential -> Issuer that granted it"}
+      heldBy:       {description: "Document/Credential/FinancialRecord -> Person who holds it"}
+      residesAt:    {description: "Person -> Address"}
+      attestsTo:    {description: "Credential -> what it certifies (qualification, licence class, grade)"}
+      supersedes:   {description: "Renewal or reissue replaces an earlier document. The temporal backbone here."}
+      relatedTo:    {description: "Person -> Person. Family or dependent relationship, deliberately untyped."}
+      appearsIn:    {description: "Entity -> Source. Kept explicit so provenance survives merges."}
+      referencedBy: {description: "Document cited by another document"}
+      maintainedAt: {description: "FinancialRecord -> Issuer holding the account"}
+      coversPeriod: {description: "Document -> the period it reports on, distinct from its issue date"}
+      OTHER:        {description: "Requires proposed_label. Suggestion queue only."}
+
+  IdentifierType:
+    description: >-
+      A closed list matching the PII patterns already detected in
+      ingest.classify(). Free-text identifier types would silently miss on
+      filter (anti-pattern #11).
+    permissible_values:
+      aadhaar:       {}
+      pan:           {}
+      passport:      {}
+      driving_licence: {}
+      voter_id:      {}
+      bank_account:  {}
+      tax_id:        {}
+      employee_id:   {}
+      student_roll:  {}
+      other:         {}
+
+  DocumentCategory:
+    permissible_values:
+      identity:    {description: "Aadhaar, passport, voter ID, driving licence"}
+      credential:  {description: "Degree, certificate, marksheet, professional licence"}
+      financial:   {description: "Bank statement, tax filing, policy, investment record"}
+      employment:  {description: "CV, offer letter, appraisal, relieving letter"}
+      property:    {description: "Deed, lease, utility record"}
+      medical:     {description: "Prescription, report, insurance claim"}
+      other:       {}
+
+classes:
+
+  Person:
+    is_a: Entity
+    class_uri: schema:Person
+    description: >-
+      The subject of the collection. Small population, high alias variance —
+      exactly the shape entity_resolver.py was built for.
+    slots: [given_name, family_name, date_of_birth_known, relationship_note]
+    slot_usage:
+      date_of_birth_known:
+        description: >-
+          BOOLEAN, not a date. Whether a DOB was found, never the value.
+          Same principle as Identifier.value_hash: presence is queryable,
+          content is not stored.
+
+  Identifier:
+    is_a: Entity
+    description: >-
+      A typed, TOKENIZED identifier. This class exists so that "which
+      documents concern the same identity" is answerable without the graph
+      ever holding an identity number.
+    slots: [identifier_type, value_hash, salt_version, issuing_authority,
+            masked_display]
+    slot_usage:
+      value_hash:
+        required: true
+        description: >-
+          HMAC-SHA256(value, secret_salt). Deterministic, so two documents
+          bearing the same number link correctly. Not reversible. The salt
+          lives in config, never in the graph, and salt_version allows
+          rotation without losing linkage history.
+      masked_display:
+        description: "Rendering only: 'XXXX XXXX 9594'. Never used for matching."
+      identifier_type: {range: IdentifierType, required: true}
+
+  IdentityDocument:
+    is_a: Entity
+    description: >-
+      Government-issued proof of identity. Renewals and rescans form
+      supersedes chains — the duplicate scan already found four Aadhaar
+      artifacts spanning 2012-2018, which is precisely this shape.
+    slots: [document_category, issued_on, expires_on, issuing_country,
+            document_number_ref, scan_quality]
+    slot_usage:
+      expires_on:
+        description: "Drives CQ-P001, the single most useful query this module enables."
+      document_number_ref:
+        description: "IRI of an Identifier. The number itself is never inlined here."
+
+  Credential:
+    is_a: Entity
+    description: "Degree, certificate, marksheet, professional licence."
+    slots: [document_category, issued_on, expires_on, awarding_body,
+            credential_level, subject_area, result_summary]
+
+  FinancialRecord:
+    is_a: Entity
+    description: "Statement, filing, policy, investment record. Values are NOT extracted."
+    slots: [document_category, period_start, period_end, institution_ref,
+            account_ref]
+    slot_usage:
+      account_ref: {description: "IRI of a tokenized Identifier, never an account number"}
+
+  Issuer:
+    is_a: Entity
+    class_uri: schema:Organization
+    description: "Authority or institution: UIDAI, passport office, university, bank, employer."
+    slots: [issuer_type, jurisdiction]
+
+  Address:
+    is_a: Entity
+    class_uri: schema:PostalAddress
+    description: >-
+      Coarse only — locality and region. Full street addresses are PII with
+      no query value here; "which documents list a Punjab address" is
+      answerable without storing the house number.
+    slots: [locality, region, country, address_hash]
+    slot_usage:
+      address_hash: {description: "Salted hash of the normalized full address, for same-address linking only"}
+
+slots:
+  given_name:        {}
+  family_name:       {}
+  date_of_birth_known: {range: boolean}
+  relationship_note: {description: "Free text, e.g. 'spouse', 'child'. Not an enum — the population is tiny."}
+
+  identifier_type:   {range: IdentifierType}
+  value_hash:        {}
+  salt_version:      {range: integer, ifabsent: "int(1)"}
+  masked_display:    {}
+  issuing_authority: {}
+
+  document_category: {range: DocumentCategory, required: true}
+  issued_on:         {range: date}
+  expires_on:        {range: date}
+  issuing_country:   {}
+  document_number_ref: {}
+  scan_quality:      {range: float, description: "From extractors.score_text; OCR of a photographed card is often poor"}
+
+  awarding_body:     {}
+  credential_level:  {}
+  subject_area:      {}
+  result_summary:    {description: "Grade or class. Marks are not itemised."}
+
+  period_start:      {range: date}
+  period_end:        {range: date}
+  institution_ref:   {}
+  account_ref:       {}
+
+  issuer_type:       {}
+  jurisdiction:      {}
+  locality:          {}
+  region:            {}
+  country:           {}
+  address_hash:      {}

@@ -1,0 +1,114 @@
+# kgx/semantic/competency_questions/personal.yaml
+#
+# THE SCOPE GATE for the personal module. Seven questions against the Cloud/AI
+# module's twelve. Deleting one deletes work; adding one adds it.
+#
+# Note how few of these RAG can answer. Almost all are structured — dates,
+# counts, chains and gaps. That is the honest case for building a graph over
+# this collection rather than just retrieving from it: a pile of scanned PDFs
+# is exactly the corpus where dense retrieval is weakest and a small graph is
+# strongest.
+#
+# STATUS: draft, needs your sign-off.
+
+version: 0.1.0
+domain: personal
+namespace: personal
+
+questions:
+
+  - id: CQ-P001
+    question: "Which of my documents expire in the next 90 days?"
+    rationale: >-
+      The reason this module is worth building. No retrieval system answers
+      this — the answer exists in no single document, only in the union of
+      expiry dates across all of them. Passport, driving licence, professional
+      certifications.
+    requires:
+      classes:    [IdentityDocument, Credential]
+      properties: [expires_on]
+      reasoning:  [temporal_filter, aggregate]
+    type: structured
+
+  - id: CQ-P002
+    question: "Which identity documents do I hold, and which are superseded by a renewal?"
+    rationale: >-
+      The duplicate scan found four Aadhaar artifacts dated 2012, 2015, 2015
+      and 2018. Those are renewals and rescans, not duplicates to be deleted —
+      supersedes chains preserve the history while making the current one
+      unambiguous.
+    requires:
+      classes:    [IdentityDocument, Person]
+      predicates: [supersedes, heldBy]
+      reasoning:  [chain, temporal]
+    type: structured
+
+  - id: CQ-P003
+    question: "Which documents concern me versus a family member?"
+    rationale: >-
+      The collection mixes people. Without this, every other query silently
+      conflates them — and the existing resolver's surname blocking makes that
+      conflation MORE likely, not less, since it groups on exactly the thing
+      family members share.
+    requires:
+      classes:    [Person, IdentityDocument, Credential, FinancialRecord]
+      predicates: [heldBy, relatedTo, identifies]
+      reasoning:  [entity_resolution, disambiguation]
+    type: structured
+
+  - id: CQ-P004
+    question: "Which qualifications do I hold, from which awarding body, and when?"
+    rationale: "CV assembly and verification. Currently requires opening every marksheet by hand."
+    requires:
+      classes:    [Credential, Issuer, Person]
+      predicates: [attestsTo, issuedBy, heldBy]
+      reasoning:  [aggregate, temporal_order]
+    type: structured
+
+  - id: CQ-P005
+    question: "Which documents reference the same identifier, without showing me the identifier?"
+    rationale: >-
+      The direct test of the tokenization design. Same-identity linking must
+      work while the graph holds only a salted hash. If this returns correct
+      groupings and no values, the privacy model is sound.
+    requires:
+      classes:    [Identifier, IdentityDocument, FinancialRecord]
+      predicates: [identifies]
+      properties: [value_hash, identifier_type]
+      reasoning:  [grouping]
+    type: structured
+    privacy_assertion: "Response must contain zero raw identifier values. Verified in the eval."
+
+  - id: CQ-P006
+    question: "Which institutions hold my financial records, and covering which periods?"
+    rationale: "Coverage and gap detection. Values are deliberately not extracted; periods and institutions are."
+    requires:
+      classes:    [FinancialRecord, Issuer]
+      predicates: [maintainedAt, coversPeriod]
+      reasoning:  [aggregate, temporal_coverage]
+    type: structured
+
+  - id: CQ-P007
+    question: "Which documents have no issuer, no date, or failed extraction?"
+    rationale: >-
+      Corpus completeness. Scanned identity cards OCR badly — scan_quality
+      exists for exactly this — and the duplicate pass already found 0-chunk
+      documents sitting in the index marked as successful. Trusting any answer
+      above requires knowing what is missing.
+    requires:
+      classes:    [Source, IdentityDocument, Credential]
+      properties: [extraction_status, scan_quality, issued_on]
+      reasoning:  [negation, filter]
+    type: structured
+    audience: [personal]
+
+# ---------------------------------------------------------------------------
+out_of_scope:
+  - reason: "Identifier values (Aadhaar, PAN, account numbers). Tokenized only. No CQ needs
+             the value; CQ-P005 proves linkage works without it."
+  - reason: "Monetary amounts in financial records. Periods and institutions carry the query
+             value; balances carry only risk."
+  - reason: "Medical detail. document_category=medical is modelled so such documents can be
+             identified and EXCLUDED, not so their contents can be extracted."
+  - reason: "Full street addresses. Locality and region answer the questions asked; the rest
+             is PII with no query value."
