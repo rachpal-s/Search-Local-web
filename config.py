@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     # Ollama
     ollama_inference_url: str = ollama_inferencing_url              # "http://localhost:11434"
     ollama_embed_url: str = "http://localhost:11434"
-    ollama_inference_model: str = light_inference_model_local       # "gemma4:31b-cloud"
+    ollama_inference_model: str = regular_inference_model_cloud       # "gemma4:31b-cloud"
     ollama_inference_critic_model: str = "gpt-oss:120b-cloud"
     ollama_embed_model: str = "nomic-embed-text"
     ollama_image_processing_model: str = "gemma4:31b-cloud"
