@@ -4,14 +4,19 @@ from functools import lru_cache
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from dotenv import load_dotenv
 load_dotenv()  # read .env into os.environ for pydantic to pick up
+light_inference_model_local = os.getenv("LIGHT_INFERENCE_MODEL_LOCAL", "gemma4:31b-cloud")
+regular_inference_model_cloud = os.getenv("REGULAR_INFERENCE_MODEL_CLOUD", "gemma4:31b-cloud")
+image_processing_model = os.getenv("IMAGE_PROCESSING_MODEL", "gemma4:31b-cloud")
+
 is_inferecning_model_local = os.getenv("IS_INFERENCING_MODEL_LOCAL", "false")
 if is_inferecning_model_local == "true":
     ollama_inferencing_url = os.getenv("OLLAMA_INFERENCE_URL_IF_LOCAL", "http://localhost:11434")
+    inference_model = light_inference_model_local
 else:
     ollama_inferencing_url = os.getenv("OLLAMA_INFERENCING_URL", "http://localhost:11434")
+    inference_model = regular_inference_model_cloud
 
-light_inference_model_local = os.getenv("LIGHT_INFERENCE_MODEL_LOCAL", "gemma4:31b-cloud")
-regular_inference_model_cloud = os.getenv("REGULAR_INFERENCE_MODEL_CLOUD", "gemma4:31b-cloud")
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
@@ -19,10 +24,10 @@ class Settings(BaseSettings):
     # Ollama
     ollama_inference_url: str = ollama_inferencing_url              # "http://localhost:11434"
     ollama_embed_url: str = "http://localhost:11434"
-    ollama_inference_model: str = regular_inference_model_cloud       # "gemma4:31b-cloud"
+    ollama_inference_model: str = inference_model       # "gemma4:31b-cloud"
     ollama_inference_critic_model: str = "gpt-oss:120b-cloud"
     ollama_embed_model: str = "nomic-embed-text"
-    ollama_image_processing_model: str = "gemma4:31b-cloud"
+    ollama_image_processing_model: str = image_processing_model
     ollama_inference_api_key: str = ""   # blank = no auth (default self-hosted Ollama)
     ollama_embed_api_key: str = ""       # blank = no auth; set if embed endpoint is gated
     ollama_num_ctx: int = 200000
