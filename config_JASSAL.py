@@ -1,18 +1,33 @@
 """config.py — centralised settings loaded from .env"""
+import os
 from functools import lru_cache
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from dotenv import load_dotenv
+load_dotenv()  # read .env into os.environ for pydantic to pick up
+light_inference_model_local = os.getenv("LIGHT_INFERENCE_MODEL_LOCAL", "gemma4:31b-cloud")
+regular_inference_model_cloud = os.getenv("REGULAR_INFERENCE_MODEL_CLOUD", "gemma4:31b-cloud")
+image_processing_model = os.getenv("IMAGE_PROCESSING_MODEL", "gemma4:31b-cloud")
+
+is_inferecning_model_local = os.getenv("IS_INFERENCING_MODEL_LOCAL", "false")
+if is_inferecning_model_local == "true":
+    ollama_inferencing_url = os.getenv("OLLAMA_INFERENCE_URL_IF_LOCAL", "http://localhost:11434")
+    inference_model = light_inference_model_local
+else:
+    ollama_inferencing_url = os.getenv("OLLAMA_INFERENCING_URL", "http://localhost:11434")
+    inference_model = regular_inference_model_cloud
+
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     # Ollama
-    ollama_inference_url: str = "http://localhost:11434"
+    ollama_inference_url: str = ollama_inferencing_url              # "http://localhost:11434"
     ollama_embed_url: str = "http://localhost:11434"
-    ollama_inference_model: str = "gemma4:31b-cloud"
+    ollama_inference_model: str = inference_model       # "gemma4:31b-cloud"
     ollama_inference_critic_model: str = "gpt-oss:120b-cloud"
     ollama_embed_model: str = "nomic-embed-text"
-    ollama_image_processing_model: str = "gemma4:31b-cloud"
+    ollama_image_processing_model: str = image_processing_model
     ollama_inference_api_key: str = ""   # blank = no auth (default self-hosted Ollama)
     ollama_embed_api_key: str = ""       # blank = no auth; set if embed endpoint is gated
     ollama_num_ctx: int = 200000
@@ -49,7 +64,11 @@ class Settings(BaseSettings):
     db_path: str = "data/webpulse.db"
     embed_dimensions: int = 768
 
-    # Scraper
+    # Scraper 
+    scrape_content_sample_chars: int = 8000   # was a hardcoded 1500
+    scrape_table_budget_ratio: float = 0.6    # share reserved for tables first
+    scrape_max_table_rows: int = 200          # per table
+    
     scraper_timeout: int = 28
     scraper_max_headlines: int = 50
     playwright_wait_seconds: float = 4.0
@@ -61,16 +80,6 @@ class Settings(BaseSettings):
     scrape_max_deferred: int = 6             # max background renders per run
     scrape_max_concurrent_heavy: int = 3     # concurrent Chromium renders
     scrape_late_wait_seconds: float = 5.0   # bounded wait before final answer
-
-    # Context budget handed to the supervisor per scraped source.
-    # Was a hardcoded 1500 chars in agents/web_scraper.py — roughly 230 words,
-    # against an ollama_num_ctx of 200_000. The cascade would escalate all the
-    # way to a Playwright render to earn 180+ words and then throw away
-    # everything past ~230, silently. Sized here so it can be tuned per
-    # deployment against the model actually in use.
-    scrape_content_sample_chars: int = 8000   # total per-source budget
-    scrape_table_budget_ratio: float = 0.6    # share reserved for tables first
-    scrape_max_table_rows: int = 200          # per table, before row truncation
 
     # Morning brief batch
     brief_auto_run: bool = True          # set false to disable auto morning run
@@ -315,18 +324,19 @@ class Settings(BaseSettings):
     # confuses the answer. Observed with mermaid_generator: four diagrams
     # generated across four loops, all four presented as the answer, when
     # the first had already succeeded.
-    # Backstop only, since workflow/routing.py now dedupes on (agent, payload)
-    # identity. Was 2, which silently capped a "scrape these four URLs" query
-    # at two sources: the router dropped the rest, the supervisor re-requested
-    # them, context stopped growing and the stagnation interceptor fired. The
-    # real guard against repetition is identity, not a count.
-    max_dispatches_per_agent: int = 8
+    max_dispatches_per_agent: int = 2
+    # Width budget for agents declared "fanout": True in AGENT_REGISTRY
+    # (workflow/registry.py) — payload-determined agents like scraper/search/
+    # doc_retriever, where dispatching N times in a turn means N different
+    # targets, not the same work repeated. See registry.py's docstring for
+    # how a new agent opts into this instead of the tighter cap above.
+    max_fanout_per_agent: int = 8
 
     # ---------------- batch ingestion jobs ----------------
     # Folders outside these roots are refused by the jobs API. Without the
     # confinement the folder textbox on the job form is an arbitrary-file-read
     # endpoint. os.pathsep separated (":" on Linux, ";" on Windows).
-    ingest_allowed_roots: str = "data/incoming"
+    ingest_allowed_roots: str = "C:\\JASSAL\\"
     job_staging_dir: str = "data/staging"
     job_default_workers: int = 0          # 0 = cores minus 25% headroom
     job_embed_concurrency: int = 4        # network-bound; independent of cores

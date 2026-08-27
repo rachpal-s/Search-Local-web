@@ -53,6 +53,16 @@ class _Run:
         self.run_id = run_id
         self.started = time.time()
         self.tasks: Dict[str, asyncio.Task] = {}      # key -> task
+        # Flipped by request_stop() from a DIFFERENT request/task. Plain
+        # bool, no lock: single-process, GIL-atomic write, read-only
+        # everywhere else.
+        self.stop_requested = False
+        # Task identities actually dispatched this turn, and the ones the
+        # router refused. Both live here rather than in graph state because
+        # a conditional-edge router returns a transition, not a state update
+        # — it has no channel to write to. See workflow/routing.py.
+        self.dispatched_keys: set = set()
+        self.dropped: List[Dict[str, str]] = []
         # deque, NOT asyncio.Queue: supervisor_node and critic_node are sync
         # functions, so LangGraph runs them in a worker thread. deque append
         # and popleft are atomic under the GIL; asyncio.Queue is not designed
@@ -136,6 +146,92 @@ def defer(key: str, work: Callable[[], Awaitable[Any]],
         return False
     run.tasks[key] = task
     return True
+
+
+# ── cooperative stop ("finish now") ───────────────────────────────────────────
+#
+# POST /chat/stop arrives as a SEPARATE request, in a separate asyncio task,
+# with its own copy of the context — so it CANNOT set the running graph's
+# ContextVar. It flips a flag on the shared _RUNS entry instead, and the
+# routers (which run inside the graph and therefore DO inherit
+# current_run_id) read it on their next decision. That module-global dict is
+# the whole reason this works; do not "tidy" the flag into a ContextVar.
+#
+# Both helpers use _RUNS.get(), NOT the _run() helper above. _run()
+# auto-creates a missing entry, which is right for defer() but wrong here: a
+# browser posting a stale run_id after its turn finished would silently
+# create a phantom run that nothing ever cleans up. An unknown run id means
+# "that turn is already over" — say so and do nothing.
+
+
+def request_stop(run_id: str) -> bool:
+    """Ask the run to finish at its next routing decision.
+
+    Returns False if the run is unknown (already finished or never existed),
+    so the caller can report that honestly rather than pretending it worked.
+    """
+    run = _RUNS.get(run_id)
+    if run is None:
+        return False
+    run.stop_requested = True
+    return True
+
+
+def stop_requested(run_id: Optional[str] = None) -> bool:
+    """True if this run has been asked to finish early. Never creates a run."""
+    run = _RUNS.get(run_id or get_run_id())
+    return bool(run and run.stop_requested)
+
+
+# ── dispatch ledger ───────────────────────────────────────────────────────────
+#
+# Why here and not in AgentState: route_from_supervisor is a conditional-edge
+# function. LangGraph uses its RETURN VALUE as the next transition, so it
+# cannot also emit a state update — there is nowhere for it to record what it
+# dispatched or refused. The run registry is the channel that already exists
+# for exactly this problem (agents/supervisor.py reads drain()/pending_urls()
+# from here for the same reason), so the ledger lives here too and is dropped
+# by cleanup() with the rest of the run.
+
+
+def note_dispatch(key: str, run_id: Optional[str] = None) -> None:
+    """Record that a specific (agent, payload) identity has been dispatched."""
+    _run(run_id).dispatched_keys.add(key)
+
+
+def was_dispatched(key: str, run_id: Optional[str] = None) -> bool:
+    run = _RUNS.get(run_id or get_run_id())
+    return bool(run and key in run.dispatched_keys)
+
+
+def note_dropped(agent: str, detail: str, reason: str,
+                 run_id: Optional[str] = None) -> None:
+    """Record a task the router refused, for the supervisor to read next loop.
+
+    Without this the refusal was a print() and nothing more: the supervisor's
+    prompt carries context, feedback and pending URLs but never learned that
+    two of the four scrapes it asked for were silently dropped. Its only
+    rational move was to ask again, which produced no new context, which
+    tripped the stagnation interceptor. The loop was caused by the silence,
+    not by the cap.
+    """
+    _run(run_id).dropped.append(
+        {"agent": agent, "detail": detail, "reason": reason})
+
+
+def take_dropped(run_id: Optional[str] = None) -> List[Dict[str, str]]:
+    """Read and CLEAR the drop list.
+
+    Cleared on read so a drop is reported to the supervisor exactly once. Left
+    in place it would be restated every loop, and a permanent 'this was
+    refused' line in the prompt reads as a standing instruction rather than
+    news about the last decision.
+    """
+    run = _RUNS.get(run_id or get_run_id())
+    if not run or not run.dropped:
+        return []
+    out, run.dropped = list(run.dropped), []
+    return out
 
 
 # ── inspection & collection ───────────────────────────────────────────────────

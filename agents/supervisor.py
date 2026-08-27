@@ -10,9 +10,9 @@ from typing import Any, Dict
 from urllib import response
 
 from langchain_core.messages import HumanMessage
+from langchain_ollama import ChatOllama
 
 from workflow import inflight
-from workflow.llm_client import invoke_with_fallback
 from workflow.registry import AGENT_REGISTRY
 from workflow.state import AgentState
 from workflow.streaming import PartialJSONFieldStreamer
@@ -24,6 +24,23 @@ from zoneinfo import ZoneInfo
 # this in case it was meant to follow the configured model.
 OLLAMA_URL = get_settings().ollama_inference_url
 SUPERVISOR_MODEL = get_settings().ollama_inference_model
+
+
+# ── "Finish now" directive ────────────────────────────────────────────────────
+# Injected into the prompt when the user has pressed the stop control. Kept as
+# a module-level constant, not an inline f-string, so a test can assert it is
+# present/absent without standing up Ollama.
+STOP_DIRECTIVE = """
+CRITICAL SYSTEM OVERRIDE — THE USER HAS ASKED YOU TO FINISH NOW:
+The user is watching this run and has pressed "Finish now". Further research is
+NOT wanted, however incomplete the picture looks to you.
+- You MUST return an empty "tasks" list. Do not schedule ANY agent, for ANY reason.
+- You MUST set "route" to "critic" and you MUST populate "final_response" by
+  synthesizing whatever is already in "Current Context Gathered".
+- If the context is thin, say so plainly inside the answer and answer anyway.
+  A short, honest, partial answer is the correct output here; a request for
+  more work is not.
+"""
 
 
 def supervisor_node(state: AgentState) -> Dict[str, Any]:
@@ -76,6 +93,20 @@ def supervisor_node(state: AgentState) -> Dict[str, Any]:
     else:
         stagnation_streak = 0
     # ---------------------------------------------------------
+    llm = ChatOllama(
+        base_url=OLLAMA_URL,
+        model=SUPERVISOR_MODEL, 
+        temperature=0,
+        format="json",
+        num_ctx=NUM_CTX,
+        num_predict=8192,
+        # LATENCY: keep the model resident between turns. Without this Ollama
+        # evicts it after ~5 minutes idle, and the next question pays a full
+        # model load before its first token — usually the biggest single
+        # chunk of perceived latency on a local setup.
+        keep_alive=get_settings().ollama_keep_alive,
+    )
+
     capabilities = "\n".join(f"- '{name}': {meta['description']}" for name, meta in AGENT_REGISTRY.items())
     ist_timezone = ZoneInfo("Asia/Kolkata")
     current_time_str = datetime.now(ist_timezone).strftime("%A, %B %d, %Y at %I:%M %p IST")
@@ -159,6 +190,44 @@ the earlier turn genuinely does not contain what the new request needs, or its
 answer was truncated by a loop/stagnation limit and is visibly incomplete.
 """
 
+    # ------------------------------------------------------------------
+    # Tasks the router refused since the last loop. Read from the run ledger
+    # because a conditional-edge router cannot write graph state (see
+    # workflow/inflight.py). Reported ONCE — take_dropped() clears as it reads
+    # — because a standing "this was refused" line reads as a rule rather than
+    # as news about the last decision.
+    #
+    # This block is what breaks the stagnation loop. Previously a refusal was
+    # a console print and nothing else: the supervisor asked for four scrapes,
+    # got two, saw two sources missing from context, and asked again — forever,
+    # because nothing in its prompt ever told it the request had been denied.
+    # ------------------------------------------------------------------
+    dropped = inflight.take_dropped()
+    dropped_block = ""
+    if dropped:
+        listing = "\n".join(
+            f"- {d['agent']} ({d['detail'][:120]}): {d['reason']}" for d in dropped)
+        dropped_block = f"""
+TASKS THE ROUTER REFUSED ON YOUR LAST DECISION:
+{listing}
+
+RULES FOR REFUSED TASKS:
+- Do NOT request any of these again. The refusal is structural, not transient — re-requesting produces this same message and no new data.
+- Work with the context you have. If it is incomplete, say what is missing in your answer rather than trying to fetch it again.
+"""
+        drop_log = f"🚫 {len(dropped)} task(s) were refused by the router on the last decision."
+        logs.append(drop_log)
+        print(f"[SUPERVISOR] {drop_log}")
+
+    # Read straight from the run registry, not from graph state: the flag is
+    # set by a different request after this run started, so it can never have
+    # been baked into state. See workflow/inflight.py.
+    stop_block = STOP_DIRECTIVE if inflight.stop_requested() else ""
+    if stop_block:
+        stop_log = "⏹️ User pressed 'Finish now' — synthesizing from existing context, no new tasks."
+        logs.append(stop_log)
+        print(f"[SUPERVISOR] {stop_log}")
+
     loop_warning = ""
     if current_loop >= max_loops:
         loop_warning = f"""
@@ -180,6 +249,7 @@ User Query: {state['user_query']}
 Current Context Gathered: {effective_context}
 Critic Feedback: {state.get('feedback', 'None')}
 {pending_block}
+{dropped_block}
 {attachments_block}
 {history_block}
 
@@ -194,6 +264,7 @@ CRITICAL DECISION RULES:
 8. VISUAL MEDIA: If the gathered context contains extracted images (formatted as Markdown `![alt](url)`), you MUST embed those exact image tags directly into your `final_response` so the user can see the pictures alongside your text.
 
 
+{stop_block}
 {loop_warning}
 
 If you have enough context to fully answer the user's query, provide the final response and set "route" to "critic".
@@ -211,24 +282,7 @@ Output STRICTLY in the following JSON format:
     print("[SUPERVISOR] ⏳ Invoking LLM for task allocation...")
     # NOTE: `logs` is initialised up in section 1a now — do not reset it here,
     # that would discard the late-result / pending messages.
-    # Retries SUPERVISOR_MODEL a couple of times on transient errors (e.g.
-    # "model temporarily overloaded"); if it's still down, falls back to
-    # CRITIC_MODEL rather than failing the whole run outright.
-    response = invoke_with_fallback(
-        [HumanMessage(content=prompt)],
-        base_url=OLLAMA_URL,
-        model=SUPERVISOR_MODEL,
-        fallback_model=get_settings().ollama_inference_critic_model,
-        format="json",
-        num_ctx=NUM_CTX,
-        num_predict=8192,
-        # LATENCY: keep the model resident between turns. Without this Ollama
-        # evicts it after ~5 minutes idle, and the next question pays a full
-        # model load before its first token — usually the biggest single
-        # chunk of perceived latency on a local setup.
-        keep_alive=get_settings().ollama_keep_alive,
-        log_prefix="[SUPERVISOR]",
-    )
+    response = llm.invoke([HumanMessage(content=prompt)])
     raw_content = response.content.strip()
     raw_content = re.sub(r"^```(?:json)?\s*", "", raw_content, flags=re.IGNORECASE)
     raw_content = re.sub(r"\s*```$", "", raw_content)
@@ -238,6 +292,24 @@ Output STRICTLY in the following JSON format:
     
     try:
         decision = json.loads(raw_content, strict=False)
+
+        # ---------------------------------------------------------
+        # 1b. Stop Override (hard guardrail)
+        # ---------------------------------------------------------
+        # Same reasoning as the stagnation interceptor below: the prompt asks
+        # for an empty task list, but a prompt is a request, not a guarantee.
+        # A model that schedules three more scrapes after the user pressed
+        # stop would make the button look broken. Strip the tasks
+        # programmatically; route_from_supervisor ends the graph regardless,
+        # but this also stops the Send() fanout from firing on the way out.
+        if stop_block and decision.get("tasks"):
+            dropped = len(decision["tasks"])
+            decision["tasks"] = []
+            decision["route"] = "critic"
+            drop_log = (f"⏹️ Stop override: discarded {dropped} task(s) the model "
+                        f"scheduled after the user asked to finish.")
+            logs.append(drop_log)
+            print(f"[SUPERVISOR] {drop_log}")
 
         # ---------------------------------------------------------
         # 2. The Interceptor Override

@@ -26,6 +26,7 @@
     transcript: $("transcript"), welcome: $("welcome"), starters: $("starters"),
     composer: $("composer"), composerWrap: document.querySelector(".composer-wrap"),
     prompt: $("prompt"), sendBtn: $("send-btn"), attachBtn: $("attach-btn"), pasteBtn: $("paste-btn"),
+    stopBtn: $("stop-btn"),
     fileInput: $("file-input"), attachments: $("attachments"),
     trace: $("trace"), traceToggle: $("trace-toggle"), traceClose: $("trace-close"),
     traceStream: $("trace-stream"), tracePulse: $("trace-pulse"),
@@ -73,6 +74,7 @@
     availableCollections: [],  // every collection that exists, for the scope banner
     dismissedScopeBanner: new Set(),  // thread ids where the banner was closed this session
     busy: false,           // a turn is in flight
+    runId: null,           // server run id for the in-flight turn ("Finish now")
     pollTimer: null,
     logs: [],
     seenAgents: new Set(),
@@ -786,6 +788,39 @@
     submitTurn();
   });
 
+  /* "Finish now": ask the server to end the graph at its next routing
+     decision and answer from the context it already has.
+
+     Deliberately does NOT abort the fetch. Aborting would stop the browser
+     reading while the server kept working — the user would lose the answer
+     AND still pay for it. Instead the stream stays open and closes with a
+     normal "complete" event, so the turn is rendered, persisted and
+     reloadable exactly like any other. The only difference is the banner and
+     that the critic never ran.
+
+     The button disables itself immediately rather than waiting for the POST:
+     a second press cannot do anything the first didn't, and a still-live
+     button through the (possibly several seconds of) remaining synthesis
+     reads as a control that isn't working. */
+  el.stopBtn.addEventListener("click", async () => {
+    if (!state.runId) return;
+    el.stopBtn.disabled = true;
+    traceLog("⏹️ Finish-now requested — waiting for the current step to land...");
+    try {
+      const res = await fetch("/chat/stop", {
+        method: "POST",
+        body: new URLSearchParams({ run_id: state.runId }),
+      });
+      const data = await res.json();
+      if (!data.ok) traceLog(`⏹️ ${data.detail}`);
+    } catch (err) {
+      // Re-enable: the request never reached the server, so a retry is
+      // meaningful here, unlike the success path.
+      el.stopBtn.disabled = false;
+      traceLog(`❌ Could not request stop: ${err.message}`);
+    }
+  });
+
   async function submitTurn() {
     const prompt = el.prompt.value.trim();
     if (!prompt || state.busy) return;
@@ -798,6 +833,12 @@
     }
 
     state.busy = true;
+    // Cleared here, set when the server's "run" event lands. Anything the
+    // stop button does before that is a no-op, which is correct — there is
+    // no run to stop yet.
+    state.runId = null;
+    el.stopBtn.disabled = false;
+    el.stopBtn.hidden = false;
     el.sendBtn.disabled = true;
     el.welcome.hidden = true;
     el.convo.dataset.hasMessages = "true";
@@ -893,7 +934,9 @@
           try { data = JSON.parse(line.slice(6)); }
           catch { continue; }
 
-          if (data.type === "log") {
+          if (data.type === "run") {
+            state.runId = data.run_id;
+          } else if (data.type === "log") {
             traceLog(data.message);
             // Only drive the thinking-step caption while still thinking —
             // once prose is on screen, replacing it with a status line
@@ -988,6 +1031,9 @@
         `<p><strong>Connection error.</strong> ${esc(err.message)}</p>`;
     } finally {
       state.busy = false;
+      state.runId = null;
+      el.stopBtn.hidden = true;
+      el.stopBtn.disabled = false;
       el.sendBtn.disabled = false;
       el.prompt.focus();
     }

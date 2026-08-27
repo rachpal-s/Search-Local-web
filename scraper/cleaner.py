@@ -16,12 +16,26 @@ AD_PAT = re.compile(
 )
 
 
-def extract_tables_markdown(html: str) -> tuple[str, int]:
+def extract_tables_markdown(html: str,
+                            max_rows_per_table: int | None = None) -> tuple[str, int]:
     """
     Extract all meaningful data tables from HTML as Markdown.
     Returns (markdown_string, table_count).
     Skips layout tables (too few columns, no thead, all same-length cells).
+
+    `max_rows_per_table` caps the body rows emitted per table and appends an
+    explicit "rows omitted" line when it bites. Previously uncapped, which the
+    JSON-derived path in scraper/engine.py never was (`rows[:300]`): a single
+    900-row market table could therefore consume an entire downstream context
+    budget on its own and push every other table off the end. Default comes
+    from config so it stays tunable; None disables the cap.
     """
+    if max_rows_per_table is None:
+        try:
+            from config import get_settings
+            max_rows_per_table = int(get_settings().scrape_max_table_rows)
+        except Exception:
+            max_rows_per_table = 200
     soup = BeautifulSoup(html, "lxml")
 
     # Remove noise first
@@ -94,9 +108,17 @@ def extract_tables_markdown(html: str) -> tuple[str, int]:
         out.append("| " + " | ".join(headers) + " |")
         out.append("| " + " | ".join(["---"] * n_cols) + " |")
 
-        for row in rows:
+        emitted = rows[:max_rows_per_table] if max_rows_per_table else rows
+        for row in emitted:
             padded = row[:n_cols] + [""] * max(0, n_cols - len(row))
             out.append("| " + " | ".join(padded) + " |")
+
+        # Said out loud, in the table itself. A row cap that leaves no trace
+        # reads downstream as a complete table with fewer rows than the page
+        # actually had — the reader has no way to know to go and look.
+        if len(emitted) < len(rows):
+            out.append(f"| _… {len(rows) - len(emitted)} further row(s) omitted "
+                       f"(showing {len(emitted)} of {len(rows)}) …_ |")
 
         out.append("")
 

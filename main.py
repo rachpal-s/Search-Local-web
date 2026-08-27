@@ -113,8 +113,7 @@ async def _startup() -> None:
           f"(run `python -m jobs.worker` to process queued jobs)")
     print(f"[boot] 🔭 telemetry -> "
           f"{'ON, ' + cfg.phoenix_endpoint if cfg.phoenix_tracing_enabled else 'off (default)'}")
-    from kgx import switch
-    switch.install()
+
 
 def _snippet(text: str, max_chars: int = 220) -> str:
     """Short, sentence-aware excerpt for a live per-source card.
@@ -165,6 +164,27 @@ def _source_card(context_entry: str):
         "still_rendering": bool(payload.get("still_rendering")),
         "snippet": _snippet(payload.get("scraped_content", "")),
     }
+
+
+def _stopped_without_answer(context: list) -> str:
+    """Last-resort body for a user-stopped run that produced no prose.
+
+    Only reachable when the stop landed while the supervisor's own LLM call
+    was already in flight, so that invocation never saw the directive and
+    returned tasks instead of an answer. Rather than show "Workflow
+    terminated" — which reads like a crash for something the user chose —
+    hand back the evidence itself. Deliberately no LLM call: the person just
+    asked to stop waiting.
+    """
+    lines = []
+    for entry in context or []:
+        text = entry if isinstance(entry, str) else json.dumps(entry)
+        text = text.strip()
+        if text:
+            lines.append(f"- {text[:600]}")
+    body = "\n".join(lines[:25]) or "_Nothing had been gathered yet._"
+    return ("⏹️ **Finished at your request, before an answer was written.** "
+            "Here is the evidence gathered up to that point:\n\n" + body)
 
 
 def _addendum(late: list) -> str:
@@ -337,6 +357,13 @@ async def chat_stream(request: Request, prompt: str = Form(...),
         def emit(message: str) -> str:
             collected_logs.append(message)
             return f"data: {json.dumps({'type': 'log', 'message': message})}\n\n"
+
+        # First event on the wire. The run id is generated server-side and had
+        # no way to reach the browser before this; the "Finish now" control
+        # needs it to name which run to stop. Emitted before any work starts so
+        # the button is live for the whole turn, including the retrieval
+        # pre-pass below.
+        yield "data: " + json.dumps({"type": "run", "run_id": run_id}) + "\n\n"
 
         # ---- retrieval pre-pass over this thread's full scope ----
         # "Full scope" = this conversation's own uploads PLUS any collections
@@ -612,6 +639,13 @@ async def chat_stream(request: Request, prompt: str = Form(...),
             print(f"\n🔥 GRAPH EXECUTION FAILED: {e}")
             yield emit(f"🔥 Graph execution failed: {type(e).__name__}: {e}")
 
+        # Read BEFORE section 4, whose `finally` calls inflight.cleanup(run_id)
+        # and deletes the run entry — read it after that and it is always False.
+        stopped_by_user = inflight.stop_requested(run_id)
+        if stopped_by_user:
+            yield emit("⏹️ Finished early at your request — answering from the "
+                       "context gathered so far. The critic did not run.")
+
         final_response, best_score, selection_source = _best_attempt(final_state)
         if selection_source != "final_state":
             msg = f"🏆 Selected the best-scoring attempt: {selection_source}."
@@ -669,6 +703,8 @@ async def chat_stream(request: Request, prompt: str = Form(...),
                     final_response = recovered
                     print("[STREAM] ⚠️ final_state had no final_response; "
                           "recovered it from the streamed token buffer instead.")
+                elif stopped_by_user:
+                    final_response = _stopped_without_answer(context)
                 else:
                     final_response = (
                         "⚠️ **Workflow terminated** without producing a final answer. "
@@ -695,8 +731,24 @@ async def chat_stream(request: Request, prompt: str = Form(...),
                 f"Treat the answer below as a best effort, not a verified one.*\n\n"
                 f"{final_response}")
 
+        # The low-confidence banner above is gated on a truthy eval_score, so a
+        # stopped run (critic never ran, score 0) correctly skips it — but it
+        # still needs its own marker. An answer that no critic reviewed must
+        # not be presented as if one had.
+        if stopped_by_user and not final_response.startswith("⏹️"):
+            final_response = (
+                "⏹️ *Finished early at your request. The critic did not review "
+                "this answer, and any queued research was dropped.*\n\n"
+                f"{final_response}")
+
         feedback = final_state.get("feedback")
         action_logs = list(final_state.get("action_logs") or collected_logs)
+        if stopped_by_user:
+            # Persisted with the turn so a reloaded thread — and the telemetry
+            # rollups — can tell a user-stopped run from a passing one. A
+            # dedicated column would be cleaner; action_logs is already a JSON
+            # list and needs no migration.
+            action_logs.append("⏹️ Finished early at the user's request (critic skipped).")
 
         message_id = store.add_message(
             conversation_id, "assistant", final_response,
@@ -707,6 +759,7 @@ async def chat_stream(request: Request, prompt: str = Form(...),
         yield "data: " + json.dumps({
             "type": "complete",
             "final_response": final_response,
+            "stopped_by_user": stopped_by_user,
             "feedback": feedback,
             "context": context,
             "action_logs": action_logs,
@@ -716,6 +769,26 @@ async def chat_stream(request: Request, prompt: str = Form(...),
         }) + "\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+@app.post("/chat/stop")
+async def chat_stop(run_id: str = Form(...)):
+    """Ask an in-flight run to finish at its next routing decision.
+
+    Deliberately not a 404 on an unknown id. The race is normal, not
+    exceptional: the turn can finish in the moment between the user deciding
+    to press the button and the request landing. `ok: false` says so without
+    lighting up an error in the browser console.
+
+    Nothing is cancelled here. The current worker runs to completion, the
+    supervisor gets one synthesis pass, and the graph ends before the critic
+    — see workflow/routing.py. A hard mid-worker abort is a separate,
+    harder feature; this one cannot leave the graph in a partial state.
+    """
+    ok = inflight.request_stop(run_id)
+    return {"ok": ok, "run_id": run_id,
+            "detail": "Stop requested." if ok else
+                      "No such active run — it has probably already finished."}
 
 
 @app.post("/chat")

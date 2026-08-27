@@ -1187,3 +1187,21 @@ svg {
 @media (prefers-reduced-motion: reduce) {
   .source-card { animation: none; }
 }
+
+
+/* "Finish now" — shown only while a turn is streaming (chat.js toggles
+   [hidden]). Warm rather than red: this is a normal, safe control that
+   returns an answer, not a destructive cancel. */
+.icon-btn.stop {
+  color: #b45309;
+}
+
+.icon-btn.stop:hover:not(:disabled) {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.icon-btn.stop:disabled {
+  opacity: .5;
+  cursor: default;
+}
