@@ -33,7 +33,7 @@ from observability import init_tracing, run_config, trace_url
 # reintroduced — see the note in observability.py.
 from routers import conversations, jobs as jobs_router, uploads
 from jobs import store as jobstore
-from workflow import app_graph, inflight
+from workflow import app_graph, inflight, llm as llm_select
 from workflow.registry import AGENT_REGISTRY
 from workflow.streaming import PartialJSONFieldStreamer
 
@@ -358,7 +358,9 @@ async def legacy_form(request: Request):
 @app.post("/chat/stream")
 async def chat_stream(request: Request, prompt: str = Form(...),
                       conversation_id: str = Form(None),
-                      user_id: str = Form(None)):
+                      user_id: str = Form(None),
+                      model: str = Form(None),
+                      critic_model: str = Form(None)):
     """Run one turn, streaming the execution trace as SSE.
 
     Order of operations matters here:
@@ -385,6 +387,12 @@ async def chat_stream(request: Request, prompt: str = Form(...),
     # worker payloads are authored by the LLM and cannot be trusted to carry it.
     session.set_conversation(conversation_id)
     run_id = inflight.set_run()
+    # Same out-of-band binding as the conversation above, and for the same
+    # reason: Send() payloads are authored by the LLM, so a user preference
+    # cannot travel through them. Values arrive from the browser and are
+    # validated against the catalogue allow-list inside set_models — an
+    # unknown id becomes the configured default rather than reaching Ollama.
+    selected_models = llm_select.set_models(model, critic_model)
 
     print("\n==================================================")
     print(f"🚀 INCOMING QUERY: '{prompt}'")
@@ -416,6 +424,13 @@ async def chat_stream(request: Request, prompt: str = Form(...),
         # the button is live for the whole turn, including the retrieval
         # pre-pass below.
         yield "data: " + json.dumps({"type": "run", "run_id": run_id}) + "\n\n"
+
+        defaults = llm_select.catalogue()["defaults"]
+        if (selected_models["primary"] != defaults["primary"]
+                or selected_models["critic"] != defaults["critic"]):
+            yield emit(f"🧩 Models for this turn — planner: "
+                       f"{selected_models['primary']}, critic: "
+                       f"{selected_models['critic']}.")
 
         # ---- retrieval pre-pass over this thread's full scope ----
         # "Full scope" = this conversation's own uploads PLUS any collections
@@ -846,6 +861,18 @@ async def chat_stream(request: Request, prompt: str = Form(...),
         }) + "\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+@app.get("/api/models")
+async def list_models():
+    """Selectable models plus this deployment's defaults.
+
+    The browser persists a choice in localStorage and sends it with every
+    turn; this endpoint is what lets it render labels and detect that a stored
+    choice is no longer offered. Defaults are returned rather than hardcoded
+    client-side so changing .env changes the UI without a frontend edit.
+    """
+    return llm_select.catalogue()
 
 
 @app.post("/chat/stop")

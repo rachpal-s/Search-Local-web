@@ -27,6 +27,9 @@
     composer: $("composer"), composerWrap: document.querySelector(".composer-wrap"),
     prompt: $("prompt"), sendBtn: $("send-btn"), attachBtn: $("attach-btn"), pasteBtn: $("paste-btn"),
     stopBtn: $("stop-btn"),
+    modelToggle: $("model-toggle"), modelPanel: $("model-panel"),
+    modelPrimary: $("model-primary"), modelCritic: $("model-critic"),
+    modelNote: $("model-note"), modelReset: $("model-reset"),
     fileInput: $("file-input"), attachments: $("attachments"),
     trace: $("trace"), traceToggle: $("trace-toggle"), traceClose: $("trace-close"),
     traceStream: $("trace-stream"), tracePulse: $("trace-pulse"),
@@ -75,6 +78,8 @@
     dismissedScopeBanner: new Set(),  // thread ids where the banner was closed this session
     busy: false,           // a turn is in flight
     runId: null,           // server run id for the in-flight turn ("Finish now")
+    models: [],            // catalogue from GET /api/models
+    modelDefaults: {},     // this deployment's defaults, server-supplied
     pollTimer: null,
     logs: [],
     seenAgents: new Set(),
@@ -821,6 +826,108 @@
     }
   });
 
+  // ── model settings ───────────────────────────────────────────────────
+  /* Persisted in localStorage, exactly like userId above: there are no
+     accounts, and a model preference that resets every refresh is worse than
+     not offering the choice at all.
+
+     Only the ID is stored — never the label or the default. Labels come from
+     the server so renaming a model in the catalogue takes effect immediately,
+     and defaults are read fresh each boot so changing .env moves every user
+     who never made an explicit choice. Storing "" means "follow the server
+     default", which is different from storing the default's current id and is
+     why the two cases are kept apart. */
+  const MODEL_KEY = "agentic.models.v1";
+
+  function loadModelPrefs() {
+    try {
+      return JSON.parse(localStorage.getItem(MODEL_KEY) || "{}");
+    } catch { return {}; }
+  }
+
+  function saveModelPrefs(prefs) {
+    try { localStorage.setItem(MODEL_KEY, JSON.stringify(prefs)); }
+    catch { /* private mode / quota — the choice just won't survive reload */ }
+  }
+
+  function modelPrefs() {
+    const p = loadModelPrefs();
+    return { primary: p.primary || "", critic: p.critic || "" };
+  }
+
+  function fillSelect(sel, chosen) {
+    sel.innerHTML = "";
+    const def = document.createElement("option");
+    def.value = "";
+    def.textContent = "Default (server)";
+    sel.appendChild(def);
+    for (const m of state.models) {
+      const o = document.createElement("option");
+      o.value = m.id;
+      o.textContent = m.label || m.id;
+      sel.appendChild(o);
+    }
+    // A stored id that is no longer in the catalogue silently reverts to
+    // "Default" here, matching what the server does with it anyway
+    // (config.resolve_model). Leaving a dead option selected would show the
+    // user a choice that isn't being honoured.
+    sel.value = state.models.some((m) => m.id === chosen) ? chosen : "";
+  }
+
+  function describeModels() {
+    const prefs = modelPrefs();
+    const name = (id, fallback) => {
+      const hit = state.models.find((m) => m.id === (id || fallback));
+      return hit ? (hit.label || hit.id) : (id || fallback || "server default");
+    };
+    const chosen = state.models.find((m) => m.id === prefs.primary);
+    const warn = chosen && chosen.reasoning
+      ? " Note: reasoning models plan more carefully but are slower to first token."
+      : "";
+    el.modelNote.textContent =
+      `Planning with ${name(prefs.primary, state.modelDefaults.primary)}, `
+      + `reviewing with ${name(prefs.critic, state.modelDefaults.critic)}.`
+      + ` If the selected model fails, the next model in the list answers instead.${warn}`;
+  }
+
+  async function loadModels() {
+    try {
+      const data = await api("/api/models");
+      state.models = data.models || [];
+      state.modelDefaults = data.defaults || {};
+      const prefs = modelPrefs();
+      fillSelect(el.modelPrimary, prefs.primary);
+      fillSelect(el.modelCritic, prefs.critic);
+      describeModels();
+    } catch (err) {
+      // Non-fatal: with no catalogue the panel stays empty and every turn
+      // simply goes out without model fields, i.e. server defaults.
+      console.warn("Model catalogue unavailable:", err.message);
+      el.modelNote.textContent = "Model list unavailable — using server defaults.";
+    }
+  }
+
+  function onModelChange() {
+    saveModelPrefs({
+      primary: el.modelPrimary.value,
+      critic: el.modelCritic.value,
+    });
+    describeModels();
+  }
+
+  el.modelToggle.addEventListener("click", () => {
+    const open = el.modelPanel.hidden;
+    el.modelPanel.hidden = !open;
+    el.modelToggle.setAttribute("aria-expanded", String(open));
+  });
+  el.modelPrimary.addEventListener("change", onModelChange);
+  el.modelCritic.addEventListener("change", onModelChange);
+  el.modelReset.addEventListener("click", () => {
+    el.modelPrimary.value = "";
+    el.modelCritic.value = "";
+    onModelChange();
+  });
+
   async function submitTurn() {
     const prompt = el.prompt.value.trim();
     if (!prompt || state.busy) return;
@@ -864,6 +971,11 @@
     form.append("prompt", prompt);
     form.append("conversation_id", state.conversationId);
     form.append("user_id", state.userId);
+    // Omitted entirely when the user has made no choice, so the server applies
+    // its own defaults rather than receiving an empty string it has to special-case.
+    const prefs = modelPrefs();
+    if (prefs.primary) form.append("model", prefs.primary);
+    if (prefs.critic) form.append("critic_model", prefs.critic);
 
     try {
       const res = await fetch("/chat/stream", { method: "POST", body: form });
@@ -1453,6 +1565,7 @@
   // ── boot ─────────────────────────────────────────────────────────────
 
   async function boot() {
+    loadModels();   // fire-and-forget: the panel fills in when it lands
     setRail(!isNarrow());
     setTrace(false);
     // `marked` comes from a CDN. On an offline box, behind a strict proxy, or

@@ -105,6 +105,14 @@
               <path d="M3.5 5.5h9M6 5.5V4h4v1.5M5 5.5l.5 8h5l.5-8" />
             </svg>
           </button>
+          <button class="icon-btn" id="model-toggle" aria-label="Model settings"
+            title="Model settings" aria-expanded="false">
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <circle cx="8" cy="8" r="2.2" fill="none" stroke="currentColor" stroke-width="1.3" />
+              <path d="M8 1.6v1.8M8 12.6v1.8M1.6 8h1.8M12.6 8h1.8M3.5 3.5l1.3 1.3M11.2 11.2l1.3 1.3M12.5 3.5l-1.3 1.3M4.8 11.2l-1.3 1.3"
+                stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
+            </svg>
+          </button>
           <button class="icon-btn" id="trace-toggle" aria-label="Toggle execution trace" title="Execution trace"
             aria-pressed="false">
             <svg viewBox="0 0 16 16" aria-hidden="true">
@@ -113,6 +121,24 @@
           </button>
         </div>
       </header>
+
+      <!-- Model settings. Populated from GET /api/models and persisted to
+           localStorage in chat.js, so a returning visitor keeps their choice.
+           Defaults come from the server, never hardcoded here. -->
+      <div class="model-panel" id="model-panel" hidden>
+        <div class="model-row">
+          <label for="model-primary">Planner / answer model</label>
+          <select id="model-primary"></select>
+        </div>
+        <div class="model-row">
+          <label for="model-critic">Critic model</label>
+          <select id="model-critic"></select>
+        </div>
+        <p class="model-note" id="model-note"></p>
+        <div class="model-actions">
+          <button type="button" class="model-reset" id="model-reset">Reset to defaults</button>
+        </div>
+      </div>
 
       <div class="transcript" id="transcript">
         <!-- Empty state -->

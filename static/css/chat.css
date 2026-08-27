@@ -1205,3 +1205,66 @@ svg {
   opacity: .5;
   cursor: default;
 }
+
+
+/* Model settings panel — collapsed by default (chat.js toggles [hidden]).
+   Deliberately inside the conversation column rather than a modal: it is a
+   per-turn setting the user may want to change while reading a reply. */
+.model-panel {
+  border-bottom: 1px solid var(--border-color, #e2e8f0);
+  padding: 12px 16px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 20px;
+  align-items: flex-end;
+  background: #f8fafc;
+}
+
+.model-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 220px;
+  flex: 1 1 220px;
+}
+
+.model-row label {
+  font-size: .75rem;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--text-secondary, #64748b);
+}
+
+.model-row select {
+  padding: 6px 8px;
+  border: 1px solid var(--border-color, #e2e8f0);
+  border-radius: 6px;
+  background: #fff;
+  font: inherit;
+  font-size: .9rem;
+}
+
+.model-note {
+  flex: 1 1 100%;
+  margin: 0;
+  font-size: .8rem;
+  color: var(--text-secondary, #64748b);
+}
+
+.model-actions {
+  flex: 0 0 auto;
+}
+
+.model-reset {
+  background: none;
+  border: 1px solid var(--border-color, #e2e8f0);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: .8rem;
+  cursor: pointer;
+  color: var(--text-secondary, #64748b);
+}
+
+.model-reset:hover {
+  background: #eef2f7;
+}

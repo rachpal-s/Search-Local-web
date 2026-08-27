@@ -12,7 +12,7 @@ from urllib import response
 from langchain_core.messages import HumanMessage
 from langchain_ollama import ChatOllama
 
-from workflow import inflight
+from workflow import inflight, llm as llm_select
 from workflow.registry import AGENT_REGISTRY
 from workflow.state import AgentState
 from workflow.streaming import PartialJSONFieldStreamer
@@ -93,19 +93,26 @@ def supervisor_node(state: AgentState) -> Dict[str, Any]:
     else:
         stagnation_streak = 0
     # ---------------------------------------------------------
-    llm = ChatOllama(
-        base_url=OLLAMA_URL,
-        model=SUPERVISOR_MODEL, 
-        temperature=0,
-        format="json",
-        num_ctx=NUM_CTX,
-        num_predict=8192,
-        # LATENCY: keep the model resident between turns. Without this Ollama
-        # evicts it after ~5 minutes idle, and the next question pays a full
-        # model load before its first token — usually the biggest single
-        # chunk of perceived latency on a local setup.
-        keep_alive=get_settings().ollama_keep_alive,
-    )
+    # A FACTORY, not a built client: workflow/llm.py retries down the model
+    # chain on failure and has to rebuild with the same temperature / format /
+    # num_ctx / num_predict each time. Those are not interchangeable between
+    # callers, so the factory keeps them attached to this one.
+    def _build_llm(model_name: str):
+        return ChatOllama(
+            base_url=OLLAMA_URL,
+            model=model_name,
+            temperature=0,
+            format="json",
+            num_ctx=NUM_CTX,
+            num_predict=8192,
+            # LATENCY: keep the model resident between turns. Without this Ollama
+            # evicts it after ~5 minutes idle, and the next question pays a full
+            # model load before its first token — usually the biggest single
+            # chunk of perceived latency on a local setup.
+            keep_alive=get_settings().ollama_keep_alive,
+        )
+
+    chosen_model = llm_select.primary_model()
 
     capabilities = "\n".join(f"- '{name}': {meta['description']}" for name, meta in AGENT_REGISTRY.items())
     ist_timezone = ZoneInfo("Asia/Kolkata")
@@ -279,10 +286,18 @@ Output STRICTLY in the following JSON format:
     "final_response": "Your compiled final answer here (only populate if route is 'critic', otherwise null)"
 }}
 """
-    print("[SUPERVISOR] ⏳ Invoking LLM for task allocation...")
+    print(f"[SUPERVISOR] ⏳ Invoking '{chosen_model}' for task allocation...")
     # NOTE: `logs` is initialised up in section 1a now — do not reset it here,
     # that would discard the late-result / pending messages.
-    response = llm.invoke([HumanMessage(content=prompt)])
+    response, model_used, llm_logs = llm_select.invoke_with_fallback(
+        _build_llm, [HumanMessage(content=prompt)],
+        chosen=chosen_model,
+        default=SUPERVISOR_MODEL,
+        label="Supervisor")
+    # Surfaced in the trace, not swallowed: a turn answered by the backup model
+    # may read differently from the one before it, and an unexplained change of
+    # voice is the kind of thing that gets reported as a bug.
+    logs.extend(llm_logs)
     raw_content = response.content.strip()
     raw_content = re.sub(r"^```(?:json)?\s*", "", raw_content, flags=re.IGNORECASE)
     raw_content = re.sub(r"\s*```$", "", raw_content)

@@ -18,6 +18,24 @@ class Settings(BaseSettings):
     ollama_num_ctx: int = 200000
 
     # ------------------------------------------------------------------
+    # Selectable inference models.
+    #
+    # A plain module-level list, NOT a Settings field: pydantic-settings would
+    # try to parse a list-of-dicts out of an env var, which is a needless
+    # failure mode for something that changes when the deployment changes, not
+    # per environment.
+    #
+    # The catalogue is also the ALLOW-LIST. A model name arrives from the
+    # browser and is interpolated straight into an Ollama call, so it is
+    # untrusted input; resolve_model() below refuses anything not listed rather
+    # than passing it through. Never widen this by trusting the client.
+    #
+    # Defaults are unchanged: ollama_inference_model for the supervisor,
+    # ollama_inference_critic_model for the critic. Selection is an override,
+    # and an absent or unknown selection falls back to those.
+    # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
     # Latency tuning
     # ------------------------------------------------------------------
     # How long Ollama keeps a model resident in VRAM after a request. The
@@ -340,6 +358,60 @@ class Settings(BaseSettings):
     code_chunk_min_chars: int = 120
     code_chunk_preamble_chars: int = 400  # imports carried into later chunks
     rag_context_max_chars: int = 12000
+
+
+MODEL_CATALOGUE = [
+    {
+        "id": "gemma4:31b-cloud",
+        "label": "Gemma 4 31B",
+        "note": "General purpose. Fast, reliable JSON. Default planner.",
+        "reasoning": False,
+    },
+    {
+        "id": "gpt-oss:120b-cloud",
+        "label": "GPT-OSS 120B",
+        "note": "Reasoning model. Stronger judgement, slower, spends tokens on hidden chain-of-thought before answering.",
+        "reasoning": True,
+    },
+    {
+        "id": "minimax-m3:cloud",
+        "label": "Minimax M3",
+        "note": "Reasoning model. Unknown judgement, slower, spends tokens on hidden chain-of-thought before answering.",
+        "reasoning": True,
+    },
+]
+
+MODEL_IDS = {m["id"] for m in MODEL_CATALOGUE}
+
+
+def resolve_model(requested: str | None, default: str) -> str:
+    """Validate a client-supplied model id against the catalogue.
+
+    Returns `default` for None, empty, or anything not in the allow-list. The
+    silent fall-back is deliberate: a stale selection persisted in someone's
+    browser after the catalogue changed should degrade to the default, not
+    500 the turn.
+    """
+    if requested and requested in MODEL_IDS:
+        return requested
+    return default
+
+
+def fallback_chain(primary: str, default: str) -> list[str]:
+    """Ordered models to try: the choice, then every other catalogued model.
+
+    The brief was "if the primary model chosen by the user is failing, the
+    backup is chosen from the available list" — so the chain is the whole
+    catalogue, primary first, with the configured default given priority among
+    the rest since it is the one known to work for this deployment.
+    """
+    chain = [primary]
+    if default not in chain:
+        chain.append(default)
+    for m in MODEL_CATALOGUE:
+        if m["id"] not in chain:
+            chain.append(m["id"])
+    return chain
 
 
 @lru_cache

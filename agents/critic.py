@@ -16,9 +16,9 @@ from typing import Any, Dict
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from langchain_core.messages import HumanMessage
+from langchain_ollama import ChatOllama
 from config import get_settings
-from workflow import inflight
-from workflow.llm_client import invoke_with_fallback
+from workflow import inflight, llm as llm_select
 from workflow.state import AgentState
 
 # NOTE: kept identical to the original — hardcoded rather than sourced
@@ -72,42 +72,35 @@ def critic_node(state: AgentState) -> Dict[str, Any]:
     """Score the proposed final response from 0-100 and provide feedback."""
     print(f"\n[CRITIC] ⚖️ ENTERING CRITIC EVALUATION")
     current_critic_loop = state.get("critic_loop_count", 0) + 1
+    chosen_model = llm_select.critic_model()
 
-    # Guard against a null final_response reaching the critic (e.g. every
-    # dispatched task got filtered by the router this turn). Scoring "None"
-    # wastes an LLM call and reports a confusing 0/100 for an answer that
-    # was never written. score_history is deliberately NOT set here — this
-    # isn't a scoring attempt, and letting a phantom 0 in would corrupt the
-    # critic_min_improvement plateau check on the next real pass.
-    if not (state.get("final_response") or "").strip():
-        msg = ("No response was synthesized — every dispatched task was filtered "
-               "out before it ran. Synthesize an answer from the existing context "
-               "now; do not dispatch further tasks.")
-        print(f"[CRITIC] ⚠️ Empty final_response — skipping evaluation. {msg}")
-        return {
-            "eval_score": 0,
-            "feedback": msg,
-            "critic_loop_count": current_critic_loop,
-            "action_logs": [
-                "⚠️ No answer to evaluate — returning to the Supervisor to synthesize."
-            ],
-        }
-
-    # NOTE: originally capped at num_predict=1024 as a latency guard,
-    # reasoning the verdict itself is only a sentence or two of JSON.
-    # REVERTED: CRITIC_MODEL (gpt-oss:120b-cloud) is a reasoning model — it
-    # spends a variable, sometimes large, number of tokens on hidden
-    # chain-of-thought BEFORE it writes the visible JSON answer. 1024 was
-    # enough for the reasoning trace to consume the entire budget and leave
-    # response.content empty, which json.loads() then rejected as
-    # "Expecting value: line 1 column 1 (char 0)" — scored 0, dropped below
-    # the pass threshold, and sent the whole turn back through a full extra
-    # supervisor+critic loop. That extra loop cost far more latency than the
-    # cap ever saved, on top of being a correctness bug. Back to
-    # unbounded-within-context; do not re-cap this without first confirming
-    # the configured critic model isn't a reasoning model, or capping high
-    # enough to cover its reasoning trace + the JSON both.
-    CRITIC_NUM_PREDICT = 8192
+    def _build_llm(model_name: str):
+        return ChatOllama(
+            base_url=get_settings().ollama_inference_url,
+            model=model_name, 
+            temperature=0,
+            format="json",
+            num_ctx=NUM_CTX,
+            # NOTE: originally capped at num_predict=1024 as a latency guard,
+            # reasoning the verdict itself is only a sentence or two of JSON.
+            # REVERTED: the default critic model (gpt-oss:120b-cloud) is a reasoning model —
+            # it spends a variable, sometimes large, number of tokens on hidden
+            # chain-of-thought BEFORE it writes the visible JSON answer. 1024 was
+            # enough for the reasoning trace to consume the entire budget and
+            # leave response.content empty, which json.loads() then rejected as
+            # "Expecting value: line 1 column 1 (char 0)" — scored 0, dropped
+            # below the pass threshold, and sent the whole turn back through a
+            # full extra supervisor+critic loop. That extra loop cost far more
+            # latency than the cap ever saved, on top of being a correctness bug.
+            # Back to unbounded-within-context. NOTE this now applies to whichever
+            # model the USER selected, which is why the empty-content case is
+            # treated as a failure in workflow/llm.py and fails over rather
+            # than scoring 0.; do not re-cap this without first
+            # confirming the selected critic model isn't a reasoning model, or
+            # capping high enough to cover its reasoning trace + the JSON both.
+            num_predict=8192,
+            keep_alive=get_settings().ollama_keep_alive,
+        )
     ist_timezone = ZoneInfo("Asia/Kolkata")
     current_time_str = datetime.now(ist_timezone).strftime("%A, %B %d, %Y at %I:%M %p IST")
     source_material = _format_context_for_critic(state.get("context", []))
@@ -169,21 +162,12 @@ def critic_node(state: AgentState) -> Dict[str, Any]:
     """
     logs = ["[CRITIC] ⏳ Evaluating final summary response..."]
     print("[CRITIC] ⏳ Evaluating final summary response...")
-    # Retries CRITIC_MODEL a couple of times on transient errors, then falls
-    # back to SUPERVISOR_MODEL if it's still unavailable — reciprocal to the
-    # supervisor's own fallback to CRITIC_MODEL, so either agent can cover
-    # for the other rather than the whole run failing on one model outage.
-    response = invoke_with_fallback(
-        [HumanMessage(content=prompt)],
-        base_url=get_settings().ollama_inference_url,
-        model=CRITIC_MODEL,
-        fallback_model=get_settings().ollama_inference_model,
-        format="json",
-        num_ctx=NUM_CTX,
-        num_predict=CRITIC_NUM_PREDICT,
-        keep_alive=get_settings().ollama_keep_alive,
-        log_prefix="[CRITIC]",
-    )
+    response, model_used, llm_logs = llm_select.invoke_with_fallback(
+        _build_llm, [HumanMessage(content=prompt)],
+        chosen=chosen_model,
+        default=CRITIC_MODEL,
+        label="Critic")
+    logs.extend(llm_logs)
 
     raw_content = response.content.strip()
     raw_content = re.sub(r"^```(?:json)?\s*", "", raw_content, flags=re.IGNORECASE)
