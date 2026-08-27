@@ -25,7 +25,25 @@ real cost. Two copies of that loop would drift.
 exception. That is not defensive padding: agents/critic.py documents exactly
 this failure, where a reasoning model burned its whole token budget on hidden
 chain-of-thought and returned empty content, which json.loads() then rejected
-and scored 0. An empty answer from model A should try model B, not propagate.
+and scored 0.
+
+EMPTY IS RETRIED ON THE SAME MODEL FIRST
+----------------------------------------
+Empty content and a dead endpoint are not the same failure and should not get
+the same response. An HTTP error means this model cannot serve the request at
+all; empty content usually means a reasoning model spent its whole budget on
+hidden chain-of-thought, which is a per-call accident that clears on a second
+pass. Switching models on the first empty response silently discards the user's
+selection for a transient condition — and because reasoning models produce
+empty far more often than gemma4 does, the model the user deliberately picked
+was the one most likely to be replaced. So empty gets one retry on the same
+model before the chain moves on.
+
+The chain is rebuilt per invocation, not per turn. That is correct — each node
+should start from the user's choice rather than inherit another node's
+failover — but it does mean one turn can legitimately be answered by several
+models. That is why every attempt is logged, and why ModelChainError carries
+those logs out rather than letting them die with the frame.
 """
 from __future__ import annotations
 
@@ -36,6 +54,26 @@ from config import MODEL_CATALOGUE, fallback_chain, get_settings, resolve_model
 
 _primary_model: ContextVar[Optional[str]] = ContextVar("primary_model", default=None)
 _critic_model: ContextVar[Optional[str]] = ContextVar("critic_model", default=None)
+
+# One retry on the same model when the failure was empty content rather than an
+# exception. Two is not better: a model that returns empty twice in a row is
+# budget-bound on this prompt, and a third identical call just costs latency.
+_EMPTY_RETRIES = 1
+
+
+class ModelChainError(RuntimeError):
+    """Every model in the chain failed.
+
+    Carries `logs` because the caller needs them: `invoke_with_fallback`
+    accumulates one line per attempt, and raising a bare RuntimeError meant
+    that list died with the frame. The visible symptom was a trace showing
+    three identical "generating..." lines and then a single error, with no
+    indication that three DIFFERENT models had been tried and why each failed.
+    """
+
+    def __init__(self, message: str, logs: List[str]):
+        super().__init__(message)
+        self.logs = logs
 
 
 # ── binding (called once per request, from the endpoint) ──────────────────────
@@ -77,6 +115,10 @@ def catalogue() -> dict:
 
 # ── invocation with failover ──────────────────────────────────────────────────
 
+class _EmptyContent(ValueError):
+    """A response with no content. Retryable on the same model — see module docstring."""
+
+
 def invoke_with_fallback(build_llm: Callable[[str], Any],
                          messages: List[Any],
                          *,
@@ -89,37 +131,56 @@ def invoke_with_fallback(build_llm: Callable[[str], Any],
     configures its own temperature / format / num_ctx / num_predict, and those
     settings are not interchangeable — the critic's num_predict=8192 exists
     specifically to cover a reasoning model's hidden trace (see
-    agents/critic.py). Handing the factory the model id keeps every one of
-    those per-caller settings intact on the retry.
+    agents/critic.py), and agents/code_editor.py sizes its own budget from the
+    source file. Handing the factory the model id keeps every one of those
+    per-caller settings intact on the retry.
 
     Returns (response, model_used, logs). `logs` is UI-facing: a silent
     failover would make a slow or differently-worded turn look inexplicable.
+    Raises ModelChainError when nothing in the catalogue answered.
     """
     chain = fallback_chain(chosen, default)
     logs: List[str] = []
     last_error: Optional[Exception] = None
 
     for attempt, model in enumerate(chain):
-        try:
-            response = build_llm(model).invoke(messages)
-            content = (getattr(response, "content", "") or "").strip()
-            if not content:
-                raise ValueError("model returned empty content")
-            if attempt:
-                msg = (f"🔁 {label}: '{chain[0]}' failed, answered with "
-                       f"fallback model '{model}' instead.")
-                logs.append(msg)
-                print(f"[LLM] {msg}")
-            return response, model, logs
-        except Exception as e:  # noqa: BLE001 — any failure is a reason to try the next
-            last_error = e
-            msg = f"⚠️ {label}: model '{model}' failed ({type(e).__name__}: {str(e)[:160]})."
-            logs.append(msg)
-            print(f"[LLM] {msg}")
+        for retry in range(_EMPTY_RETRIES + 1):
+            try:
+                response = build_llm(model).invoke(messages)
+                content = (getattr(response, "content", "") or "").strip()
+                if not content:
+                    raise _EmptyContent("model returned empty content")
+                if attempt or retry:
+                    msg = (f"🔁 {label}: answered with '{model}'"
+                           + ("" if not attempt else f" after '{chain[0]}' failed")
+                           + ("" if not retry else " on retry")
+                           + ".")
+                    logs.append(msg)
+                    print(f"[LLM] {msg}")
+                else:
+                    print(f"[LLM] {label}: answered with '{model}'.")
+                return response, model, logs
+            except _EmptyContent as e:
+                last_error = e
+                if retry < _EMPTY_RETRIES:
+                    msg = (f"🔁 {label}: '{model}' returned empty (likely spent its "
+                           f"budget on hidden reasoning) — retrying the same model.")
+                    logs.append(msg)
+                    print(f"[LLM] {msg}")
+                    continue
+                break
+            except Exception as e:  # noqa: BLE001 — any hard failure moves the chain on
+                last_error = e
+                break
+
+        msg = (f"⚠️ {label}: model '{model}' failed "
+               f"({type(last_error).__name__}: {str(last_error)[:160]}).")
+        logs.append(msg)
+        print(f"[LLM] {msg}")
 
     # Nothing in the catalogue worked. Raise rather than return a sentinel:
     # the callers already have JSON-parse recovery paths that would otherwise
     # treat total unavailability as a malformed answer and hide the real cause.
-    raise RuntimeError(
+    raise ModelChainError(
         f"{label}: every model in the fallback chain failed "
-        f"({', '.join(chain)}). Last error: {last_error}")
+        f"({', '.join(chain)}). Last error: {last_error}", logs)

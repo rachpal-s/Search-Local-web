@@ -101,6 +101,11 @@ def route_from_supervisor(state: AgentState):
                 "one of those names, or answer without it")
             continue
 
+        if agent_name == "doc_retriever" and state.get("artifact_mode"):
+            print("[ROUTER] 🛑 Skipping doc_retriever — attached files are "
+                    "already in context whole. Nothing to retrieve.")
+            continue
+
         if agent_name == "doc_retriever" and retrieval_attempts >= max_retrieval_attempts:
             # Tighter than the general cap below, and kept separate — see
             # config.py. A corpus that didn't have the answer on attempt 1

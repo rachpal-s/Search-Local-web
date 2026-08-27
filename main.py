@@ -704,6 +704,13 @@ async def chat_stream(request: Request, prompt: str = Form(...),
                         final_state = out
         except Exception as e:
             print(f"\n🔥 GRAPH EXECUTION FAILED: {e}")
+            # workflow.llm.ModelChainError carries one line per attempted model.
+            # Without draining them the trace shows N identical "generating..."
+            # lines and a single error, with no sign that N DIFFERENT models were
+            # tried or why each one failed — which is what made ordinary failover
+            # look like the models were mixing at random.
+            for line in getattr(e, "logs", []):
+                yield emit(line)
             yield emit(f"🔥 Graph execution failed: {type(e).__name__}: {e}")
 
         # Read BEFORE section 4, whose `finally` calls inflight.cleanup(run_id)
@@ -948,6 +955,11 @@ async def chat_once(prompt: str = Form(...), conversation_id: str = Form(None),
             context.extend(str(x) for x in late)
     except Exception as e:
         print(f"\n🔥 GRAPH EXECUTION FAILED: {e}")
+        # Same as the streaming path: surface the per-model attempt log before
+        # the exception swallows it. There is no SSE channel here, so it goes to
+        # the server log rather than the client.
+        for line in getattr(e, "logs", []):
+            print(f"[LLM] {line}")
         raise HTTPException(500, f"Workflow execution failed: {e}") from e
     finally:
         inflight.cleanup(run_id)

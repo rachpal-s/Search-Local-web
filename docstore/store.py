@@ -468,13 +468,28 @@ def set_document_status(doc_id: str, status: str, reason_code: str | None = None
         c.execute(f"UPDATE documents SET {','.join(sets)} WHERE id=?", vals)
 
 
-def list_documents(conversation_id: str) -> list[dict]:
+def list_documents(conversation_id: str, include_paths: bool = False) -> list[dict]:
+    """List a conversation's documents, oldest first.
+
+    `stored_path` is OFF by default and must be asked for. Two callers return
+    this straight to the browser (routers/uploads.py, routers/conversations.py)
+    and stored_path is an absolute server filesystem path. Server-side consumers
+    that need to READ the file — docstore/artifacts.py for whole-file injection
+    and agents/code_editor.py for editing — pass include_paths=True.
+
+    Leaving the column out of the projection entirely was the earlier bug: both
+    of those modules filter on `d.get("stored_path")`, which matched nothing, so
+    whole-file mode silently never engaged and the code editor reported "no
+    uploaded files in this conversation" for a conversation full of them.
+    """
+    cols = ("id,file_name,media_type,size_bytes,status,reason_code,"
+            "chunk_count,quality,page_count,data_classification,warnings,created_at,"
+            "source_uri,parent_doc_id,job_id")
+    if include_paths:
+        cols += ",stored_path"
     with conn() as c:
         rows = c.execute(
-            "SELECT id,file_name,media_type,size_bytes,status,reason_code,"
-            "chunk_count,quality,page_count,data_classification,warnings,created_at,"
-            "source_uri,parent_doc_id,job_id "
-            "FROM documents WHERE conversation_id=? ORDER BY created_at",
+            f"SELECT {cols} FROM documents WHERE conversation_id=? ORDER BY created_at",
             (conversation_id,)).fetchall()
     out = []
     for r in rows:

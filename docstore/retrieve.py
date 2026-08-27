@@ -327,14 +327,33 @@ async def context_for_query(conversation_id: str,
     from docstore.collections import scopes_for
     from docstore.graph_hydrate import hydrate as graph_hydrate
 
+    from docstore import artifacts
+
     scope_ids = scopes_for(conversation_id)
     if not scope_ids:
         return [], [], None
-    stats = store.corpus_stats_scoped(scope_ids)
-    if not stats["chunks"]:
-        return [], [], None
-    hits = await search(scope_ids, query)
 
-    blocks = format_for_prompt(hits)
+    # Whole-file mode first. A source file the user attached in order to EDIT it
+    # is worth more entire than as three of its twelve fragments, and eligibility
+    # for it does not depend on chunking having finished — so this runs before
+    # the corpus_stats gate rather than after it. Previously the gate returned
+    # early and this path was never reached at all.
+    verbatim, captured, _skipped, _complete = artifacts.collect(conversation_id)
+
+    stats = store.corpus_stats_scoped(scope_ids)
+    hits = await search(scope_ids, query) if stats["chunks"] else []
+
+    if captured:
+        # Drop excerpts for files already present in full. The same file as both
+        # fragments and a whole is worse than either alone: the model patches
+        # whichever copy it noticed last, and the fragment has no line numbers.
+        captured_set = {c.lower() for c in captured}
+        hits = [h for h in hits
+                if (h.get("file_name") or "").lower() not in captured_set]
+
+    if not verbatim and not hits:
+        return [], [], None
+
+    blocks = verbatim + format_for_prompt(hits)
     graph_blocks, graph_trace = await graph_hydrate(scope_ids, hits)
     return blocks + graph_blocks, hits, graph_trace

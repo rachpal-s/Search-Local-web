@@ -25,6 +25,7 @@ from agents.youtube_downloader import youtube_downloader_node
 from agents.mermaid_agent import mermaid_agent_node
 from agents.mermaid_lite_agent import mermaid_lite_node
 from agents.wordcloud_agent import wordcloud_node
+from agents.code_editor import code_editor_node
 import functools
 import asyncio
 import inspect
@@ -106,6 +107,20 @@ AGENT_REGISTRY = {
             "Requires payload format: {\"text\": \"<text to visualize>\"}"
         ),
         "func": wordcloud_node,
+    },
+    "code_editor": {
+        "description": (
+            "Applies a requested change to a source file the user attached to "
+            "THIS conversation (any language: .py .js .ts .java .go .rs .css "
+            ".html .sql etc), and writes the complete modified file to disk. "
+            "Use this — never your own final_response — whenever the user asks "
+            "to fix, correct, modify, refactor, extend, debug or rewrite an "
+            "attached file. It reads the file itself, so do NOT put file "
+            "contents in the payload. Requires payload format: "
+            "{'file_name': '<exact attached file name>', "
+            "'instruction': '<what to change, in one or two sentences>'}"
+        ),
+        "func": code_editor_node,
     },
 }
 

@@ -236,6 +236,19 @@ class HtmlModeRouter(Extractor):
         if any(m in head for m in self._TEMPLATE_MARKERS):
             return True, "template_syntax_present"
 
+        # Self-contained single-file apps are the case the ratio test below
+        # gets wrong: most of their bytes sit INSIDE <style>/<script>, which is
+        # content between tags, not tag characters — so a sudoku board or a
+        # dashboard scores ~0.15 and reads as an article. The prose extractor
+        # then strips the exact CSS/JS the user wants changed, and the file
+        # indexes as one near-empty chunk.
+        embedded = sum(len(m) for m in re.findall(
+            r"<(?:script|style)\b[^>]*>(.*?)</(?:script|style)>", head,
+            re.DOTALL | re.IGNORECASE))
+        if embedded > 1_000:
+            return True, "embedded_script_or_style"
+
+
         tag_chars = sum(len(m) for m in re.findall(r"<[^>]{1,400}>", head))
         if head and tag_chars / len(head) > 0.55:
             return True, "high_markup_ratio"

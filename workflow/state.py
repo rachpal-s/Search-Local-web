@@ -72,7 +72,9 @@ class AgentState(TypedDict):
     conversation_id: Optional[str]
     attached_files: List[str]
     chat_history: List[Dict[str, str]]
-
+    # True when attached source files were injected whole (docstore/artifacts.py).
+    # Suppresses doc_retriever: there is nothing left to retrieve.
+    artifact_mode: bool
 
 class ExtractTaskState(TypedDict):
     """Payload state for the Extractor worker."""
@@ -106,3 +108,8 @@ class WordCloudTaskState(TypedDict):
 class DocRetrieveTaskState(TypedDict):
     """Payload state for the Document Retriever worker."""
     query: str
+
+class CodeEditTaskState(TypedDict):
+    """Payload state for the Code Editor worker."""
+    file_name: str
+    instruction: str
