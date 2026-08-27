@@ -187,25 +187,73 @@ def _stopped_without_answer(context: list) -> str:
             "Here is the evidence gathered up to that point:\n\n" + body)
 
 
-def _addendum(late: list) -> str:
+def _payload_of(entry) -> dict | None:
+    """Pull the JSON payload out of a context/late entry, if there is one."""
+    text = entry if isinstance(entry, str) else json.dumps(entry)
+    match = re.search(r"\{.*\}", text, re.S)
+    if not match:
+        return None
+    try:
+        return json.loads(match.group(0))
+    except json.JSONDecodeError:
+        return None
+
+
+def _worth_appending(payload: dict | None, known: dict) -> bool:
+    """Is this late result worth showing the user at all?
+
+    The gate exists because a deferred re-render frequently comes back with
+    nothing new. Observed case: a directory page returned 99 words of nav
+    chrome ending in "No record found", was deferred for a full render, and
+    the full render returned the same 99 words — which were then appended
+    under "Late Additions" as though they added something. They didn't; they
+    just buried a correct answer under a menu listing.
+
+    Two rejections, both cheap:
+      * the scraper already flagged it as insufficient, and
+      * the same source is already in context with an equal or better
+        extraction, so this render is a duplicate, not an addition.
+    """
+    if not payload or not payload.get("word_count"):
+        return False
+    if payload.get("insufficient_content"):
+        return False
+    src = payload.get("source")
+    if src and src in known and payload["word_count"] <= known[src]:
+        return False
+    return True
+
+
+def _addendum(late: list, context: list | None = None) -> str:
     """Render late background results as an appendix to the final answer.
 
     Deliberately dumb: it appends rather than trying to re-open and rewrite the
     answer the critic already approved. If you want the late material woven in
     properly, that is a second supervisor+critic delta pass, not string surgery.
+
+    Returns "" when nothing survives the quality gate, which the caller relies
+    on — an empty addendum must stay empty rather than emitting a "Late
+    Additions" heading with nothing useful under it.
     """
     if not late:
         return ""
+
+    # What each source already contributed, so a re-render that adds nothing
+    # can be recognised as a duplicate rather than an addition.
+    known: dict = {}
+    for entry in context or []:
+        p = _payload_of(entry)
+        if p and p.get("source") and p.get("word_count"):
+            known[p["source"]] = max(known.get(p["source"], 0), p["word_count"])
+
     lines = []
     for entry in late:
         text = entry if isinstance(entry, str) else json.dumps(entry)
-        payload = None
-        match = re.search(r"\{.*\}", text, re.S)
-        if match:
-            try:
-                payload = json.loads(match.group(0))
-            except json.JSONDecodeError:
-                payload = None
+        payload = _payload_of(entry)
+        if payload is not None and not _worth_appending(payload, known):
+            print(f"[STREAM] 🗑️ Late result from "
+                  f"{payload.get('source', '?')} added nothing new — not appended.")
+            continue
         if payload and payload.get("word_count"):
             title = payload.get("title") or payload.get("source", "Source")
             src = payload.get("source", "")
@@ -214,6 +262,10 @@ def _addendum(late: list) -> str:
             lines.append(f"**[{title}]({src})** — {wc} words\n\n{snippet}...")
         else:
             lines.append(f"- {text[:300]}")
+
+    if not lines:
+        return ""
+
     body = "\n\n".join(lines)
     return (
         "\n\n---\n\n### 🕐 Late Additions\n\n"
@@ -653,6 +705,8 @@ async def chat_stream(request: Request, prompt: str = Form(...),
             yield emit(msg)
         context = list(final_state.get("context") or doc_blocks)
 
+        late_addendum = ""
+
         # ---- 4. Post-graph: fold in deferred background renders ----
         try:
             pending = inflight.pending_urls(run_id)
@@ -666,9 +720,24 @@ async def chat_stream(request: Request, prompt: str = Form(...),
                 late = inflight.drain(run_id)
 
             if late:
-                yield emit(f"📥 {len(late)} late result(s) folded into the answer.")
-                final_response = (final_response or "") + _addendum(late)
                 context.extend(str(x) for x in late)
+                # HELD, NOT APPENDED. Appending here is what lost the answer:
+                # `final_response` can legitimately be None at this point (the
+                # "LangGraph" root capture comes back empty even on clean
+                # single-pass runs — see the note at the supervisor capture
+                # above), and `(final_response or "") + addendum` made it
+                # TRUTHY. The `if not final_response:` recovery below then
+                # never fired, so supervisor_final_response and the streamed
+                # token buffer — both written specifically to rescue this case
+                # — were skipped, and the turn rendered as nothing but a "Late
+                # Additions" block. The addendum is appended at the very end
+                # instead, once a real answer has actually been resolved.
+                late_addendum = _addendum(late, context)
+                if late_addendum:
+                    yield emit(f"📥 {len(late)} late result(s) folded into the answer.")
+                else:
+                    yield emit(f"🗑️ {len(late)} late result(s) added nothing "
+                               f"new and were not appended.")
 
             still = inflight.pending_urls(run_id)
             if still:
@@ -740,6 +809,14 @@ async def chat_stream(request: Request, prompt: str = Form(...),
                 "⏹️ *Finished early at your request. The critic did not review "
                 "this answer, and any queued research was dropped.*\n\n"
                 f"{final_response}")
+
+        # Appended LAST, after every recovery path and banner has had its say,
+        # so it can only ever supplement a resolved answer — never stand in for
+        # one. The guard is belt-and-braces: if nothing recovered an answer,
+        # a "Late Additions" appendix on its own is worse than the explicit
+        # failure message it would be hiding.
+        if late_addendum and final_response and final_response.strip():
+            final_response += late_addendum
 
         feedback = final_state.get("feedback")
         action_logs = list(final_state.get("action_logs") or collected_logs)
@@ -898,4 +975,4 @@ async def delete_download(filename: str):
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host=cfg.app_host, port=9001)
+    uvicorn.run(app, host=cfg.app_host, port=cfg.app_port)
