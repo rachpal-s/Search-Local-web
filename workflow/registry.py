@@ -26,6 +26,7 @@ from agents.mermaid_agent import mermaid_agent_node
 from agents.mermaid_lite_agent import mermaid_lite_node
 from agents.wordcloud_agent import wordcloud_node
 import functools
+import asyncio
 import inspect
 
 AGENT_REGISTRY = {
@@ -146,7 +147,11 @@ def _with_dispatch_count(agent_name: str, fn):
     else:
         @functools.wraps(fn)
         async def wrapper(state):
-            result = fn(state)
+            # Sync node bodies (yt-dlp, mmdc, wordcloud) block for tens of
+            # seconds. Awaiting them inline parks the ONLY event loop and
+            # freezes every other request. to_thread copies contextvars, so
+            # inflight.current_run_id / session conversation_id survive.
+            result = await asyncio.to_thread(fn, state)
             if isinstance(result, dict):
                 result = {**result, "dispatch_counts": {agent_name: 1}}
             return result

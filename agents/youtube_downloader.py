@@ -16,11 +16,18 @@ from workflow.state import YoutubeTaskState
 DOWNLOAD_DIR = "static/downloads"
 YOUTUBE_URL_PATTERN = r'(https?://(?:www\.)?(?:youtube\.com/(?:watch\?v=|shorts/)|youtu\.be/)[\w-]+)'
 
+MAX_CONCURRENT_DOWNLOADS = 2
+_DOWNLOAD_SLOTS = threading.BoundedSemaphore(MAX_CONCURRENT_DOWNLOADS)
+SOCKET_OPTS = {
+    "socket_timeout": 30,
+    "retries": 2,
+}
 SEARCH_OPTS = {
     "quiet": True,
     "extract_flat": False,
     "default_search": "ytsearch1:",
     "noplaylist": True,
+    **SOCKET_OPTS,
 }
 
 
